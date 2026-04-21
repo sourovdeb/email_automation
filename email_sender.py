@@ -2,6 +2,44 @@ from playwright.sync_api import sync_playwright
 import time
 import os
 
+
+def fill_proton_editor_body(page, body_text):
+    """Fill Proton composer body across UI variants (iframe or inline editor)."""
+    strategies = [
+        ("iframe[data-testid='rooster-iframe']", "div[aria-label='Email body']"),
+        ("iframe[data-testid*='rooster']", "div[aria-label='Email body']"),
+        ("iframe[title*='Email']", "div[aria-label='Email body']"),
+        ("iframe[data-testid='rooster-iframe']", "div[contenteditable='true']"),
+        ("iframe[data-testid*='rooster']", "div[contenteditable='true']"),
+    ]
+
+    for frame_selector, body_selector in strategies:
+        try:
+            frame = page.frame_locator(frame_selector)
+            locator = frame.locator(body_selector).first
+            locator.wait_for(timeout=7000)
+            locator.fill(body_text)
+            return True
+        except Exception:
+            continue
+
+    inline_strategies = [
+        "div[data-testid='composer:body'] div[contenteditable='true']",
+        "div[aria-label='Email body'][contenteditable='true']",
+        "div[role='textbox'][contenteditable='true']",
+    ]
+
+    for selector in inline_strategies:
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(timeout=7000)
+            locator.fill(body_text)
+            return True
+        except Exception:
+            continue
+
+    return False
+
 def send_email_with_protonmail(username, password, recipient_email, subject, body, attachment_path, browser_name="chromium", headless=False):
     """
     Logs into ProtonMail and sends an email with an attachment.
@@ -45,10 +83,10 @@ def send_email_with_protonmail(username, password, recipient_email, subject, bod
             # Fill in the recipient, subject, and body
             page.fill("input[data-testid='composer:to']", recipient_email)
             page.fill("input[data-testid='composer:subject']", subject)
-            
-            # The body is inside an iframe, so we need to handle that
-            iframe = page.frame_locator("iframe[data-testid='rooster-iframe']")
-            iframe.locator("div[aria-label='Email body']").fill(body)
+
+            body_filled = fill_proton_editor_body(page, body)
+            if not body_filled:
+                raise RuntimeError("Unable to locate Proton email body editor. UI selectors may have changed.")
 
             # Attach the file
             if attachment_path and os.path.exists(attachment_path):

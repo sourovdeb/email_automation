@@ -1,28 +1,56 @@
 # Email Automation (Accessible GUI)
 
-A Python desktop app that helps prepare and send concise, personalized job emails using:
-- CV parsing (PDF)
-- Company list parsing (XLSX)
-- Company research via open web search
-- Playwright browser automation with Proton Mail (Chromium or Firefox)
+This project automates personalized job outreach emails with:
+1. Python orchestration
+2. Playwright + Chromium/Firefox for web automation
+3. Open-source search workflow for company profiling
+4. Proton Mail primary send path
+5. Thunderbird fallback path (compose automation)
 
-## Accessibility goals
+The GUI is accessibility-focused (large controls, high contrast, clear flow) for autistic, elderly, and handicapped users.
 
-The GUI is designed for easier use by autistic, elderly, and handicapped users:
-- Large text and controls
-- High-contrast colors
-- Clear labels and focused flow
-- Keyboard-friendly input order
-- Live log panel with simple messages
-- Safety toggle (dry-run)
+## What The User Must Provide
 
-## Project files
+1. CV file:
+   - Type: PDF
+   - Example: `cv.pdf`
+2. Company list file:
+   - Type: XLSX
+   - Must include at least one company name column (for example `NOM`)
+   - Should include an email/contact column when available
+3. Login options:
+   - Proton email username
+   - Proton password
+   - Browser choice (`chromium` or `firefox`)
+   - Run mode (`headless` true/false)
+   - Safety mode (`dry_run` true/false)
+   - Max companies per run
 
-- `main_app.py`: GUI and orchestration
-- `data_parser.py`: reads CV and company list
-- `researcher.py`: collects company context from web search
-- `email_generator.py`: generates concise personalized email body
-- `email_sender.py`: sends email through Proton Mail web UI via Playwright
+## Required Local Files And Folders
+
+The app creates and uses these paths under the project root:
+
+1. `.env`
+   - Stores credentials and runtime options
+2. `logs/automation.log`
+   - Detailed timestamped runtime log
+3. `data/metadata/runs.jsonl`
+   - One JSON record per execution (local learning history)
+4. `data/attachments/`
+   - Optional folder for additional attachments
+
+## .env Format
+
+Use this format in `.env`:
+
+```env
+PROTON_USER=your_user@proton.me
+PROTON_PASS=your_password
+BROWSER=chromium
+HEADLESS=false
+DRY_RUN=true
+MAX_COMPANIES=5
+```
 
 ## Setup
 
@@ -33,11 +61,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-2. Install dependencies:
+2. Install Python dependencies and Playwright browsers:
 
 ```bash
 pip install -r requirements.txt
-playwright install
+playwright install chromium firefox
 ```
 
 3. Run app:
@@ -46,27 +74,87 @@ playwright install
 python main_app.py
 ```
 
-## Usage
+## Usage Flow
 
-1. Select CV PDF.
-2. Select company list XLSX.
-3. Enter Proton credentials.
-4. Choose browser (`chromium` or `firefox`).
-5. Set options:
-   - headless mode
-   - dry run
-   - max companies
-6. Run test email first.
-7. Start automation.
+1. Select CV (PDF).
+2. Select company list (XLSX).
+3. Confirm or edit login options.
+4. Save login options to `.env` (button or checkbox auto-save).
+5. Run `Send Test Email` first.
+6. Run `Start Automation`.
 
-## Important notes
+## Graceful Fallback Hierarchy
 
-- Always run a test email to your own address before a full run.
-- Use dry-run to verify generated flow before sending.
-- Proton web UI selectors can change over time; update `email_sender.py` if needed.
-- Never commit passwords.
+At each send attempt, use this order:
 
-## GitHub
+1. Primary: Proton Mail via Playwright
+2. Fallback A: Switch browser (Chromium <-> Firefox)
+3. Fallback B: Headed mode (disable headless)
+4. Fallback C: Thunderbird compose automation (manual final review/send)
+5. Fallback D: Dry-run export/log only (no send)
 
-This project is intended for:
-- https://github.com/sourovdeb/email_automation
+## Thunderbird Automation (Fallback)
+
+If Proton UI selectors fail or login flow changes, compose via Thunderbird:
+
+```bash
+thunderbird -compose "to=recipient@example.com,subject='Job inquiry',body='Hello ...',attachment='file:///absolute/path/to/cv.pdf'"
+```
+
+Notes:
+1. Use absolute file paths for attachments.
+2. Keep final review manual before clicking Send.
+3. This fallback protects continuity when web UI changes.
+
+## Local Metadata Learning
+
+Each run appends metadata to `data/metadata/runs.jsonl`.
+Saved fields include:
+1. Timestamp
+2. Browser used
+3. Run settings (headless/dry-run/max)
+4. Per-company outcome
+5. Summary stats (sent ok/failed/skipped)
+
+Adaptive behavior:
+1. On startup, the app checks previous run success by browser.
+2. It preselects the browser with the best historical send success rate.
+3. This improves reliability over repeated use.
+
+## Detailed Logging
+
+The app logs to:
+1. GUI log panel (live feedback)
+2. `logs/automation.log` (persistent log with timestamps)
+
+Typical entries:
+1. File selection
+2. Run configuration
+3. Per-company processing status
+4. Send success/failure
+5. Metadata save status
+
+Security:
+1. Do not log raw passwords.
+2. Keep `.env` local.
+3. Never commit `.env`.
+
+## AI Role vs Python Role
+
+Python + Playwright role:
+1. Daily execution
+2. Deterministic automation
+3. Logging and metadata history
+4. Reliability tuning via local run outcomes
+
+AI role:
+1. Architect and engineer when requested
+2. Design or update workflows/templates
+3. Debug broken selectors or edge cases
+4. Improve system strategy on demand
+
+This keeps normal operation reusable without AI, while AI remains optional for upgrades.
+
+## Repository
+
+https://github.com/sourovdeb/email_automation
