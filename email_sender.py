@@ -1,148 +1,239 @@
-from playwright.sync_api import sync_playwright
+"""
+ProtonMail email sender using Playwright browser automation.
+
+Strategy: try multiple selectors for each UI element to stay resilient across
+ProtonMail interface updates.  Retries once on failure.
+"""
+from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 import time
 import os
 
 
-def fill_proton_editor_body(page, body_text):
-    """Fill Proton composer body across UI variants (iframe or inline editor)."""
-    strategies = [
-        ("iframe[data-testid='rooster-iframe']", "div[aria-label='Email body']"),
-        ("iframe[data-testid*='rooster']", "div[aria-label='Email body']"),
-        ("iframe[title*='Email']", "div[aria-label='Email body']"),
-        ("iframe[data-testid='rooster-iframe']", "div[contenteditable='true']"),
-        ("iframe[data-testid*='rooster']", "div[contenteditable='true']"),
-    ]
+# ---------------------------------------------------------------------------
+# Selector lists — ordered by most-likely-current first
+# ---------------------------------------------------------------------------
 
-    for frame_selector, body_selector in strategies:
+_LOGIN_USERNAME = ["#username", "input[name='username']", "input[type='email']"]
+_LOGIN_PASSWORD = ["#password", "input[name='password']", "input[type='password']"]
+_LOGIN_SUBMIT   = ["button[type='submit']", "button:has-text('Sign in')", "button:has-text('Se connecter')"]
+_SIDEBAR_READY  = [".sidebar", "[data-testid='navigation-item:inbox']", "nav"]
+_COMPOSE_BTN    = [
+    "button[data-testid='sidebar:compose']",
+    "a[data-testid='sidebar:compose']",
+    "button:has-text('New message')",
+    "button:has-text('Nouveau message')",
+]
+_TO_FIELD       = [
+    "input[data-testid='composer:to']",
+    "input[placeholder*='recipient' i]",
+    "input[aria-label*='To' i]",
+]
+_SUBJECT_FIELD  = [
+    "input[data-testid='composer:subject']",
+    "input[placeholder*='Subject' i]",
+    "input[placeholder*='Objet' i]",
+]
+_SEND_BTN       = [
+    "button[data-testid='composer:send-button']",
+    "button:has-text('Send')",
+    "button:has-text('Envoyer')",
+]
+_ATTACHMENT_INPUT = ["input[type='file']"]
+_ATTACHMENT_DONE  = [".attachment-card", "[data-testid='composer:attachment-list'] *"]
+_COMPOSER_GONE    = ["div[data-testid='composer']"]
+
+
+def _try_click(page, selectors, timeout=8000):
+    for sel in selectors:
         try:
-            frame = page.frame_locator(frame_selector)
-            locator = frame.locator(body_selector).first
-            locator.wait_for(timeout=7000)
-            locator.fill(body_text)
+            loc = page.locator(sel).first
+            loc.wait_for(state="visible", timeout=timeout)
+            loc.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _try_fill(page, selectors, value, timeout=8000):
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            loc.wait_for(state="visible", timeout=timeout)
+            loc.fill(value)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _fill_body(page, body_text):
+    """Fill ProtonMail's rich-text editor (Rooster) via iframe or contenteditable."""
+    iframe_strategies = [
+        ("iframe[data-testid='rooster-iframe']", "div[aria-label='Email body']"),
+        ("iframe[data-testid*='rooster']",        "div[aria-label='Email body']"),
+        ("iframe[title*='Email' i]",              "div[aria-label='Email body']"),
+        ("iframe[data-testid='rooster-iframe']",  "div[contenteditable='true']"),
+        ("iframe[data-testid*='rooster']",        "div[contenteditable='true']"),
+    ]
+    for frame_sel, body_sel in iframe_strategies:
+        try:
+            frame  = page.frame_locator(frame_sel)
+            target = frame.locator(body_sel).first
+            target.wait_for(timeout=8000)
+            target.click()
+            target.fill(body_text)
             return True
         except Exception:
             continue
 
-    inline_strategies = [
+    inline = [
         "div[data-testid='composer:body'] div[contenteditable='true']",
         "div[aria-label='Email body'][contenteditable='true']",
         "div[role='textbox'][contenteditable='true']",
+        "div[contenteditable='true']",
     ]
-
-    for selector in inline_strategies:
+    for sel in inline:
         try:
-            locator = page.locator(selector).first
-            locator.wait_for(timeout=7000)
-            locator.fill(body_text)
+            loc = page.locator(sel).first
+            loc.wait_for(timeout=8000)
+            loc.click()
+            loc.fill(body_text)
             return True
         except Exception:
             continue
 
     return False
 
-def send_email_with_protonmail(username, password, recipient_email, subject, body, attachment_path, browser_name="chromium", headless=False):
-    """
-    Logs into ProtonMail and sends an email with an attachment.
 
-    Args:
-        username (str): Your ProtonMail username.
-        password (str): Your ProtonMail password.
-        recipient_email (str): The email address of the recipient.
-        subject (str): The subject of the email.
-        body (str): The body of the email.
-        attachment_path (str): The absolute path to the file to be attached.
-
-    Returns:
-        bool: True if the email was sent successfully, False otherwise.
-    """
-    with sync_playwright() as p:
+def _do_send(page, username, password, recipient, subject, body, attachment_path):
+    print("  Navigating to ProtonMail login …")
+    page.goto("https://mail.proton.me/login", timeout=60000)
+    # Don't wait for networkidle — ProtonMail has persistent background requests.
+    # Instead wait for the username field to appear.
+    for sel in _LOGIN_USERNAME:
         try:
-            if browser_name == "firefox":
-                browser = p.firefox.launch(headless=headless)
-            else:
-                browser = p.chromium.launch(headless=headless)
-            page = browser.new_page()
+            page.wait_for_selector(sel, timeout=30000)
+            break
+        except Exception:
+            continue
 
-            print("Navigating to ProtonMail login page...")
-            page.goto("https://mail.proton.me/login", timeout=60000)
+    print("  Filling credentials …")
+    if not _try_fill(page, _LOGIN_USERNAME, username):
+        raise RuntimeError("Cannot locate username field")
+    if not _try_fill(page, _LOGIN_PASSWORD, password):
+        raise RuntimeError("Cannot locate password field")
+    if not _try_click(page, _LOGIN_SUBMIT):
+        raise RuntimeError("Cannot click submit button")
 
-            # Wait for the page to load and fill in credentials
-            print("Entering credentials...")
-            page.fill("#username", username)
-            page.fill("#password", password)
-            page.click("button[type='submit']")
+    print("  Waiting for inbox …")
+    found = False
+    for sel in _SIDEBAR_READY:
+        try:
+            page.wait_for_selector(sel, timeout=60000)
+            found = True
+            break
+        except PWTimeout:
+            continue
+    if not found:
+        raise RuntimeError("Login timed out – check credentials or 2FA")
+    print("  Login OK")
 
-            # Wait for the login to complete and the main mailbox to be visible
-            page.wait_for_selector(".sidebar", timeout=60000)
-            print("Login successful.")
+    time.sleep(2)
+    print("  Opening composer …")
+    if not _try_click(page, _COMPOSE_BTN, timeout=10000):
+        raise RuntimeError("Cannot find Compose button")
+    time.sleep(1)
 
-            # Click the "New message" button
-            page.click("button[data-testid='sidebar:compose']")
-            print("Composing new email...")
+    print("  Filling To / Subject …")
+    if not _try_fill(page, _TO_FIELD, recipient):
+        raise RuntimeError("Cannot fill recipient field")
+    page.keyboard.press("Tab")
+    time.sleep(0.5)
 
-            # Fill in the recipient, subject, and body
-            page.fill("input[data-testid='composer:to']", recipient_email)
-            page.fill("input[data-testid='composer:subject']", subject)
+    if not _try_fill(page, _SUBJECT_FIELD, subject):
+        raise RuntimeError("Cannot fill subject field")
 
-            body_filled = fill_proton_editor_body(page, body)
-            if not body_filled:
-                raise RuntimeError("Unable to locate Proton email body editor. UI selectors may have changed.")
+    print("  Filling body …")
+    if not _fill_body(page, body):
+        raise RuntimeError("Cannot fill email body – ProtonMail selectors may have changed")
 
-            # Attach the file
-            if attachment_path and os.path.exists(attachment_path):
-                print(f"Attaching file: {attachment_path}")
-                page.set_input_files("input[type='file']", attachment_path)
-                # Wait for the attachment to upload
-                page.wait_for_selector(".attachment-card", timeout=60000)
-                print("Attachment uploaded.")
+    if attachment_path and os.path.exists(attachment_path):
+        print(f"  Attaching {os.path.basename(attachment_path)} …")
+        for sel in _ATTACHMENT_INPUT:
+            try:
+                page.set_input_files(sel, attachment_path)
+                break
+            except Exception:
+                continue
+        # wait for upload confirmation
+        for sel in _ATTACHMENT_DONE:
+            try:
+                page.wait_for_selector(sel, timeout=30000)
+                print("  Attachment uploaded")
+                break
+            except PWTimeout:
+                continue
 
-            # Click the send button
-            page.click("button[data-testid='composer:send-button']")
-            print("Sending email...")
+    print("  Sending …")
+    if not _try_click(page, _SEND_BTN, timeout=10000):
+        raise RuntimeError("Cannot click Send button")
 
-            # Wait for a confirmation or for the composer to close
-            page.wait_for_selector("div[data-testid='composer']", state='hidden', timeout=60000)
-            print("Email sent successfully!")
-            
-            # Give it a moment before closing
-            time.sleep(5)
-            browser.close()
-            return True
+    # Wait for composer to close (sent successfully)
+    try:
+        page.wait_for_selector(_COMPOSER_GONE[0], state="hidden", timeout=30000)
+    except PWTimeout:
+        pass  # composer may auto-close differently on some builds
 
-        except Exception as e:
-            print(f"An error occurred while sending the email: {e}")
-            if 'browser' in locals() and browser.is_connected():
+    time.sleep(3)
+    print("  Email sent!")
+    return True
+
+
+def send_email_with_protonmail(
+    username, password, recipient_email, subject, body,
+    attachment_path=None, browser_name="chromium", headless=False
+):
+    """
+    Send an email via ProtonMail using Playwright.
+
+    Returns True on success, False on failure.
+    Retries once automatically on transient failures.
+    """
+    for attempt in range(1, 3):
+        print(f"\n--- ProtonMail send attempt {attempt}/2 ---")
+        with sync_playwright() as p:
+            try:
+                launch = p.firefox.launch if browser_name == "firefox" else p.chromium.launch
+                browser = launch(headless=headless)
+                ctx  = browser.new_context(viewport={"width": 1280, "height": 900})
+                page = ctx.new_page()
+                _do_send(page, username, password, recipient_email, subject, body, attachment_path)
                 browser.close()
-            return False
+                return True
+            except Exception as e:
+                print(f"  Attempt {attempt} failed: {e}")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                if attempt < 2:
+                    print("  Retrying in 5 s …")
+                    time.sleep(5)
+    return False
 
-if __name__ == '__main__':
-    # This is for testing purposes.
-    # IMPORTANT: Replace with your actual credentials and file paths.
-    # It's recommended to use environment variables for credentials in a real application.
-    
-    proton_user = os.environ.get("PROTON_USER", "your_protonmail_username")
-    proton_pass = os.environ.get("PROTON_PASS", "your_protonmail_password")
-    
-    # The test email address provided in the prompt
-    test_recipient = "sourovdeb.is@gmail.com"
-    
-    # Example CV path
-    # cv_file_path = "/home/sourov/Documents/employment/rerappelrdvfrancetravailuesaaxeressourceconseilst/Formateurd_Anglais_Certifié_CELTA_Cambridge_Spécialiste_IELTS_TOEIC_Business_English.pdf"
-    cv_file_path = "path/to/your/cv.pdf" # Make sure this path is correct
 
-    if proton_user == "your_protonmail_username" or proton_pass == "your_protonmail_password":
-        print("Please set your ProtonMail credentials as environment variables (PROTON_USER, PROTON_PASS) or directly in the script for testing.")
-    elif not os.path.exists(cv_file_path):
-        print(f"CV file not found at: {cv_file_path}. Please update the path for testing.")
-    else:
-        test_subject = "Test Email from Job Automator"
-        test_body = "This is a test email sent automatically using Playwright. If you received this, the automation is working correctly."
-        
-        send_email_with_protonmail(
-            username=proton_user,
-            password=proton_pass,
-            recipient_email=test_recipient,
-            subject=test_subject,
-            body=test_body,
-            attachment_path=cv_file_path
-        )
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    load_dotenv()
+    ok = send_email_with_protonmail(
+        username=os.getenv("PROTON_USER"),
+        password=os.getenv("PROTON_PASS"),
+        recipient_email="sourovdeb.is@gmail.com",
+        subject="Test – Job Automator",
+        body="Ceci est un email de test automatisé.\n\nCordialement,\nSourov Deb",
+        attachment_path=None,
+        browser_name="chromium",
+        headless=False,
+    )
+    print("Result:", "OK" if ok else "FAILED")

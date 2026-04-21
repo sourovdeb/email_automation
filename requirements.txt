@@ -4,5 +4,12 @@ PyPDF2
 playwright
 requests
 beautifulsoup4
+lxml
 PyQt6
 python-dotenv
+anthropic
+
+# Optional — install the ones for your chosen AI provider:
+# mistralai       (pip install mistralai)       — for Mistral API
+# openai          (pip install openai)           — for DeepSeek API (OpenAI-compatible)
+# Ollama runs locally — no pip package needed, just install from https://ollama.com

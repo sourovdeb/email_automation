@@ -1,427 +1,739 @@
-import sys
-from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, 
-                             QFileDialog, QLineEdit, QLabel, QTextEdit, QFormLayout,
-                             QSpinBox, QCheckBox, QComboBox)
-from PyQt6.QtGui import QFont
-import os
-import json
+"""
+Job Application Automator – Main GUI
+Tabbed interface: Setup | Run | Preview | Settings | History
+"""
+import sys, os, json, threading
 from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QFileDialog, QLineEdit, QLabel, QTextEdit,
+    QFormLayout, QSpinBox, QCheckBox, QComboBox, QTabWidget,
+    QProgressBar, QGroupBox, QScrollArea, QSplitter, QStatusBar,
+    QMessageBox, QFrame
+)
+from PyQt6.QtGui import QFont, QColor, QPalette
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+
 from dotenv import load_dotenv
 
-# Import our automation modules
-from data_parser import read_company_list, extract_cv_text
-from researcher import search_company_website
-from email_generator import generate_email_body
+from data_parser import read_company_list, extract_cv_text, extract_motivation_letter
+from researcher import search_company_info
+from email_generator import generate_email
 from email_sender import send_email_with_protonmail
 
-class JobAutomatorApp(QWidget):
-    def __init__(self):
+
+# ---------------------------------------------------------------------------
+# Worker thread so GUI stays responsive during automation
+# ---------------------------------------------------------------------------
+
+class AutomationWorker(QObject):
+    log_signal     = pyqtSignal(str)
+    progress       = pyqtSignal(int, int)   # (current, total)
+    preview_ready  = pyqtSignal(str, str, str, str)  # (company, email, subject, body)
+    finished       = pyqtSignal(dict)       # stats dict
+
+    def __init__(self, config):
         super().__init__()
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
-        self.env_path = os.path.join(self.base_dir, ".env")
-        self.logs_dir = os.path.join(self.base_dir, "logs")
-        self.data_dir = os.path.join(self.base_dir, "data")
-        self.attachments_dir = os.path.join(self.data_dir, "attachments")
-        self.metadata_dir = os.path.join(self.data_dir, "metadata")
-        self.log_file_path = os.path.join(self.logs_dir, "automation.log")
-        self.metadata_file_path = os.path.join(self.metadata_dir, "runs.jsonl")
-        self.run_meta = None
-        self.cv_path = ""
-        self.company_list_path = ""
-        self.initialize_runtime_directories()
-        self.initUI()
-        self.load_settings_from_env()
-        self.apply_adaptive_defaults()
+        self._config = config
+        self._stop   = False
 
-    def initUI(self):
-        self.setWindowTitle('Job Application Automator')
-        self.setGeometry(80, 80, 860, 820)
+    def stop(self):
+        self._stop = True
 
-        layout = QVBoxLayout()
-        form_layout = QFormLayout()
-        form_layout.setLabelAlignment(form_layout.labelAlignment())
+    def run(self):
+        cfg = self._config
+        stats = {"processed": 0, "sent": 0, "skipped": 0, "failed": 0}
 
-        # Accessibility-first sizing and contrast.
-        app_font = QFont("DejaVu Sans", 12)
-        self.setFont(app_font)
-        self.setStyleSheet(
-            "QWidget { background: #f7f8fa; color: #111; }"
-            "QPushButton { min-height: 44px; font-size: 14px; font-weight: 600; background: #0b5fff; color: white; border-radius: 8px; padding: 8px 12px; }"
-            "QPushButton:focus { border: 3px solid #ff8c00; }"
-            "QLineEdit, QComboBox, QSpinBox, QTextEdit { min-height: 38px; font-size: 14px; border: 2px solid #c4c7ce; border-radius: 6px; padding: 6px; background: #fff; }"
-            "QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus { border: 3px solid #ff8c00; }"
-            "QLabel { font-size: 13px; }"
-            "QCheckBox { font-size: 14px; spacing: 8px; }"
-        )
+        self.log_signal.emit("=== Démarrage de l'automatisation ===")
 
-        # File selection buttons
-        self.btn_cv = QPushButton('Select CV (PDF)', self)
-        self.btn_cv.clicked.connect(self.select_cv_file)
-        self.lbl_cv = QLabel('No file selected')
-        self.lbl_cv.setWordWrap(True)
-        form_layout.addRow(self.btn_cv, self.lbl_cv)
+        result = read_company_list(cfg["company_path"])
+        if result is None:
+            self.log_signal.emit("ERREUR: impossible de lire la liste d'entreprises.")
+            self.finished.emit(stats)
+            return
+        df, name_col, email_col = result
 
-        self.btn_companies = QPushButton('Select Company List (XLSX)', self)
-        self.btn_companies.clicked.connect(self.select_company_file)
-        self.lbl_companies = QLabel('No file selected')
-        self.lbl_companies.setWordWrap(True)
-        form_layout.addRow(self.btn_companies, self.lbl_companies)
-
-        # ProtonMail credentials
-        self.email_input = QLineEdit(self)
-        self.email_input.setPlaceholderText("Your ProtonMail Email")
-        self.email_input.setAccessibleName("ProtonMail user email")
-        form_layout.addRow(QLabel("ProtonMail User:"), self.email_input)
-
-        self.password_input = QLineEdit(self)
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("Your ProtonMail Password")
-        self.password_input.setAccessibleName("ProtonMail password")
-        form_layout.addRow(QLabel("ProtonMail Pass:"), self.password_input)
-
-        self.save_credentials_check = QCheckBox("Save login options to .env", self)
-        self.save_credentials_check.setChecked(True)
-        form_layout.addRow(QLabel("Credentials:"), self.save_credentials_check)
-
-        # Runtime options for reuse without AI.
-        self.browser_select = QComboBox(self)
-        self.browser_select.addItems(["chromium", "firefox"])
-        self.browser_select.setCurrentText("chromium")
-        form_layout.addRow(QLabel("Browser:"), self.browser_select)
-
-        self.headless_check = QCheckBox("Run browser in background (headless)", self)
-        self.headless_check.setChecked(False)
-        form_layout.addRow(QLabel("Mode:"), self.headless_check)
-
-        self.dry_run_check = QCheckBox("Dry run only (generate and log emails, do not send)", self)
-        self.dry_run_check.setChecked(False)
-        form_layout.addRow(QLabel("Safety:"), self.dry_run_check)
-
-        self.max_companies = QSpinBox(self)
-        self.max_companies.setMinimum(1)
-        self.max_companies.setMaximum(260)
-        self.max_companies.setValue(5)
-        form_layout.addRow(QLabel("Max companies:"), self.max_companies)
-
-        layout.addLayout(form_layout)
-
-        # Action buttons
-        self.btn_test = QPushButton('Send Test Email to sourovdeb.is@gmail.com', self)
-        self.btn_test.clicked.connect(self.send_test_email)
-        layout.addWidget(self.btn_test)
-
-        self.btn_save_env = QPushButton('Save Login Options to .env', self)
-        self.btn_save_env.clicked.connect(self.save_settings_to_env)
-        layout.addWidget(self.btn_save_env)
-
-        self.btn_start = QPushButton('Start Automation', self)
-        self.btn_start.clicked.connect(self.start_automation)
-        layout.addWidget(self.btn_start)
-
-        # Log display
-        self.log_display = QTextEdit(self)
-        self.log_display.setReadOnly(True)
-        self.log_display.setAccessibleName("Live automation log")
-        layout.addWidget(QLabel("Logs:"))
-        layout.addWidget(self.log_display)
-
-        self.setLayout(layout)
-
-    def log(self, message):
-        self.log_display.append(message)
-        timestamp = datetime.now().isoformat(timespec="seconds")
-        try:
-            with open(self.log_file_path, "a", encoding="utf-8") as log_file:
-                log_file.write(f"[{timestamp}] {message}\n")
-        except Exception:
-            # Keep UI responsive even if file logging fails.
-            pass
-        QApplication.processEvents() # Update the GUI
-
-    def initialize_runtime_directories(self):
-        os.makedirs(self.logs_dir, exist_ok=True)
-        os.makedirs(self.attachments_dir, exist_ok=True)
-        os.makedirs(self.metadata_dir, exist_ok=True)
-
-    def init_run_metadata(self):
-        self.run_meta = {
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "browser": self.browser_select.currentText(),
-            "headless": self.headless_check.isChecked(),
-            "dry_run": self.dry_run_check.isChecked(),
-            "max_companies": self.max_companies.value(),
-            "companies": [],
-            "stats": {
-                "processed": 0,
-                "research_ok": 0,
-                "email_found": 0,
-                "sent_ok": 0,
-                "sent_failed": 0,
-                "skipped": 0
-            }
-        }
-
-    def record_company_result(self, company_name, status, reason="", contact_email_found=False):
-        if self.run_meta is None:
+        cv_text = extract_cv_text(cfg["cv_path"])
+        if not cv_text:
+            self.log_signal.emit("ERREUR: impossible de lire le CV.")
+            self.finished.emit(stats)
             return
 
-        self.run_meta["companies"].append(
-            {
-                "time": datetime.now().isoformat(timespec="seconds"),
-                "company": company_name,
-                "status": status,
-                "reason": reason,
-                "contact_email_found": contact_email_found
-            }
-        )
+        letter_text = extract_motivation_letter(cfg.get("letter_path", "")) or ""
+        combined_profile = f"=== CV ===\n{cv_text}\n\n=== LETTRE ===\n{letter_text}"
 
-        self.run_meta["stats"]["processed"] += 1
-        if status == "dry_run_ready":
-            self.run_meta["stats"]["research_ok"] += 1
-            self.run_meta["stats"]["email_found"] += 1
-        elif status == "sent_ok":
-            self.run_meta["stats"]["research_ok"] += 1
-            self.run_meta["stats"]["email_found"] += 1
-            self.run_meta["stats"]["sent_ok"] += 1
-        elif status == "sent_failed":
-            self.run_meta["stats"]["research_ok"] += 1
-            self.run_meta["stats"]["email_found"] += 1
-            self.run_meta["stats"]["sent_failed"] += 1
-        else:
-            self.run_meta["stats"]["skipped"] += 1
-            if contact_email_found:
-                self.run_meta["stats"]["email_found"] += 1
+        limit = cfg["max_companies"]
+        subset = df.head(limit)
+        total  = len(subset)
 
-    def save_run_metadata(self):
-        if self.run_meta is None:
-            return
+        self.log_signal.emit(f"Traitement de {total} entreprise(s) | dry_run={cfg['dry_run']}")
 
-        try:
-            with open(self.metadata_file_path, "a", encoding="utf-8") as meta_file:
-                meta_file.write(json.dumps(self.run_meta, ensure_ascii=True) + "\n")
-            self.log(f"Run metadata saved to {self.metadata_file_path}")
-        except Exception as exc:
-            self.log(f"Warning: could not save metadata ({exc})")
+        run_log = []
 
-    def get_adaptive_browser(self):
-        if not os.path.exists(self.metadata_file_path):
-            return None
+        for idx, (_, row) in enumerate(subset.iterrows()):
+            if self._stop:
+                self.log_signal.emit("Arrêté par l'utilisateur.")
+                break
 
-        browser_stats = {
-            "chromium": {"ok": 0, "total": 0},
-            "firefox": {"ok": 0, "total": 0}
-        }
-
-        try:
-            with open(self.metadata_file_path, "r", encoding="utf-8") as meta_file:
-                for line in meta_file:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    record = json.loads(line)
-                    browser = record.get("browser", "chromium")
-                    stats = record.get("stats", {})
-                    sent_total = int(stats.get("sent_ok", 0)) + int(stats.get("sent_failed", 0))
-                    if browser in browser_stats and sent_total > 0:
-                        browser_stats[browser]["ok"] += int(stats.get("sent_ok", 0))
-                        browser_stats[browser]["total"] += sent_total
-        except Exception:
-            return None
-
-        candidates = []
-        for browser, values in browser_stats.items():
-            if values["total"] > 0:
-                success_rate = values["ok"] / values["total"]
-                candidates.append((success_rate, browser))
-
-        if not candidates:
-            return None
-
-        candidates.sort(reverse=True)
-        return candidates[0][1]
-
-    def apply_adaptive_defaults(self):
-        suggested = self.get_adaptive_browser()
-        if suggested:
-            self.browser_select.setCurrentText(suggested)
-            self.log(f"Adaptive default browser: {suggested}")
-
-    def load_settings_from_env(self):
-        if os.path.exists(self.env_path):
-            load_dotenv(self.env_path, override=True)
-            self.email_input.setText(os.getenv("PROTON_USER", ""))
-            self.password_input.setText(os.getenv("PROTON_PASS", ""))
-            self.browser_select.setCurrentText(os.getenv("BROWSER", "chromium"))
-            self.headless_check.setChecked(os.getenv("HEADLESS", "false").lower() == "true")
-            self.dry_run_check.setChecked(os.getenv("DRY_RUN", "false").lower() == "true")
-            try:
-                self.max_companies.setValue(int(os.getenv("MAX_COMPANIES", "5")))
-            except ValueError:
-                self.max_companies.setValue(5)
-            self.log("Loaded login options from .env")
-        else:
-            self.log("No .env found yet. Use 'Save Login Options to .env' after entering values.")
-
-    def save_settings_to_env(self):
-        env_content = (
-            f"PROTON_USER={self.email_input.text().strip()}\n"
-            f"PROTON_PASS={self.password_input.text().strip()}\n"
-            f"BROWSER={self.browser_select.currentText()}\n"
-            f"HEADLESS={str(self.headless_check.isChecked()).lower()}\n"
-            f"DRY_RUN={str(self.dry_run_check.isChecked()).lower()}\n"
-            f"MAX_COMPANIES={self.max_companies.value()}\n"
-        )
-        with open(self.env_path, "w", encoding="utf-8") as env_file:
-            env_file.write(env_content)
-        self.log(f"Saved login options to {self.env_path}")
-
-    def get_email_from_row(self, row):
-        for key, value in row.items():
-            if value is None:
-                continue
-            text = str(value).strip()
-            if "@" in text and "." in text and len(text) > 5:
-                return text
-            key_name = str(key).lower()
-            if "mail" in key_name and "@" in text:
-                return text
-        return None
-
-    def select_cv_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Select CV", "", "PDF Files (*.pdf)")
-        if file_name:
-            self.cv_path = file_name
-            self.lbl_cv.setText(os.path.basename(file_name))
-            self.log(f"CV selected: {self.cv_path}")
-
-    def select_company_file(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Select Company List", "", "Excel Files (*.xlsx)")
-        if file_name:
-            self.company_list_path = file_name
-            self.lbl_companies.setText(os.path.basename(file_name))
-            self.log(f"Company list selected: {self.company_list_path}")
-
-    def send_test_email(self):
-        if not self.are_credentials_valid(): return
-        if not self.cv_path:
-            self.log("Please select a CV file first.")
-            return
-
-        if self.save_credentials_check.isChecked():
-            self.save_settings_to_env()
-            
-        self.log("Sending test email...")
-        
-        test_subject = "Test Email from Job Automator"
-        test_body = "This is a test email sent automatically. The CV is attached."
-        
-        success = send_email_with_protonmail(
-            username=self.email_input.text(),
-            password=self.password_input.text(),
-            recipient_email="sourovdeb.is@gmail.com",
-            subject=test_subject,
-            body=test_body,
-            attachment_path=self.cv_path,
-            browser_name=self.browser_select.currentText(),
-            headless=self.headless_check.isChecked()
-        )
-        
-        if success:
-            self.log("Test email sent successfully!")
-        else:
-            self.log("Failed to send test email. Check logs and credentials.")
-
-    def start_automation(self):
-        if not self.are_inputs_valid(): return
-
-        if self.save_credentials_check.isChecked():
-            self.save_settings_to_env()
-
-        self.log("--- Starting Automation ---")
-        self.init_run_metadata()
-        
-        # 1. Read data
-        cv_text = extract_cv_text(self.cv_path)
-        companies_df = read_company_list(self.company_list_path)
-
-        if cv_text is None or companies_df is None:
-            self.log("Failed to read CV or company list. Aborting.")
-            return
-
-        limit = self.max_companies.value()
-        self.log(f"Configured run: browser={self.browser_select.currentText()}, headless={self.headless_check.isChecked()}, dry_run={self.dry_run_check.isChecked()}, max_companies={limit}")
-
-        for index, row in companies_df.head(limit).iterrows():
-            company_name = row.get('NOM')
-            contact_email = self.get_email_from_row(row)
+            company_name = str(row.get(name_col, "")).strip()
+            city         = str(row.get("Ville", "")).strip()
+            postal_code  = str(row.get("CP", "")).strip()
+            ca           = str(row.get("C.A.", "")).strip()
 
             if not company_name:
-                self.log(f"Skipping row {index} due to missing company name.")
-                self.record_company_result("UNKNOWN", "skipped", "missing company name", contact_email_found=bool(contact_email))
+                self.log_signal.emit(f"[{idx+1}/{total}] Ligne ignorée (nom manquant)")
+                stats["skipped"] += 1
+                self.progress.emit(idx + 1, total)
                 continue
 
-            self.log(f"\nProcessing {company_name}...")
+            self.log_signal.emit(f"\n[{idx+1}/{total}] {company_name} – {city}")
+            stats["processed"] += 1
 
-            # 2. Research company
-            company_research = search_company_website(company_name)
-            if not company_research:
-                self.log(f"Could not find information for {company_name}. Skipping.")
-                self.record_company_result(company_name, "skipped", "research not found", contact_email_found=bool(contact_email))
-                continue
+            # Research
+            contact_email_in_xlsx = None
+            if email_col:
+                val = row.get(email_col)
+                if val and "@" in str(val):
+                    contact_email_in_xlsx = str(val).strip()
 
-            # 3. Generate email
-            email_subject = f"Inquiry from a skilled professional regarding opportunities at {company_name}"
-            email_body = generate_email_body(cv_text, row, company_research)
-            
-            # 4. Send email
-            if not contact_email:
-                self.log(f"No contact email found for {company_name}. Skipping.")
-                self.record_company_result(company_name, "skipped", "contact email not found", contact_email_found=False)
-                continue
-
-            if self.dry_run_check.isChecked():
-                self.log(f"Dry run: prepared email to {contact_email} for {company_name}.")
-                self.record_company_result(company_name, "dry_run_ready", "email generated only", contact_email_found=True)
-                continue
-
-            self.log(f"Sending email to {contact_email} for {company_name}...")
-            success = send_email_with_protonmail(
-                username=self.email_input.text(),
-                password=self.password_input.text(),
-                recipient_email=contact_email,
-                subject=email_subject,
-                body=email_body,
-                attachment_path=self.cv_path,
-                browser_name=self.browser_select.currentText(),
-                headless=self.headless_check.isChecked()
-            )
-
-            if success:
-                self.log(f"Email to {company_name} sent successfully!")
-                self.record_company_result(company_name, "sent_ok", "", contact_email_found=True)
+            if contact_email_in_xlsx:
+                research = {"about_text": "", "contact_email": contact_email_in_xlsx, "website": None}
+                self.log_signal.emit(f"  Email trouvé dans le fichier: {contact_email_in_xlsx}")
             else:
-                self.log(f"Failed to send email to {company_name}.")
-                self.record_company_result(company_name, "sent_failed", "send function returned failure", contact_email_found=True)
+                self.log_signal.emit(f"  Recherche web en cours …")
+                research = search_company_info(company_name, city)
 
-        self.save_run_metadata()
-        self.log("--- Automation Finished ---")
+            contact_email = research.get("contact_email")
 
-    def are_credentials_valid(self):
-        if not self.email_input.text() or not self.password_input.text():
-            self.log("Please enter your ProtonMail credentials.")
+            if not contact_email:
+                self.log_signal.emit(f"  Aucun email trouvé — ignoré")
+                stats["skipped"] += 1
+                run_log.append({"company": company_name, "status": "skipped", "reason": "no email"})
+                self.progress.emit(idx + 1, total)
+                continue
+
+            # Generate email
+            company_info = {
+                "company_name": company_name,
+                "city": city,
+                "ca": ca,
+                "postal_code": postal_code,
+            }
+            subject, body = generate_email(
+                combined_profile, company_info, research,
+                api_key      = cfg.get("api_key"),
+                provider     = cfg.get("provider", "template"),
+                ollama_model = cfg.get("ollama_model", "mistral"),
+                ollama_url   = cfg.get("ollama_url", "http://localhost:11434"),
+            )
+            self.log_signal.emit(f"  Email généré → {contact_email}")
+            self.preview_ready.emit(company_name, contact_email, subject, body)
+
+            if cfg["dry_run"]:
+                self.log_signal.emit(f"  [DRY RUN] Email non envoyé.")
+                run_log.append({"company": company_name, "status": "dry_run", "email": contact_email})
+                self.progress.emit(idx + 1, total)
+                continue
+
+            # Send
+            self.log_signal.emit(f"  Envoi en cours …")
+            ok = send_email_with_protonmail(
+                username         = cfg["proton_user"],
+                password         = cfg["proton_pass"],
+                recipient_email  = contact_email,
+                subject          = subject,
+                body             = body,
+                attachment_path  = cfg["cv_path"],
+                browser_name     = cfg["browser"],
+                headless         = cfg["headless"],
+            )
+            if ok:
+                self.log_signal.emit(f"  Envoyé !")
+                stats["sent"] += 1
+                run_log.append({"company": company_name, "status": "sent", "email": contact_email})
+            else:
+                self.log_signal.emit(f"  ECHEC de l'envoi")
+                stats["failed"] += 1
+                run_log.append({"company": company_name, "status": "failed", "email": contact_email})
+
+            self.progress.emit(idx + 1, total)
+
+        stats["run_log"] = run_log
+        self.log_signal.emit(f"\n=== Terminé | Traités:{stats['processed']} Envoyés:{stats['sent']} Ignorés:{stats['skipped']} Echecs:{stats['failed']} ===")
+        self.finished.emit(stats)
+
+
+# ---------------------------------------------------------------------------
+# Main window
+# ---------------------------------------------------------------------------
+
+STYLE = """
+QMainWindow, QWidget { background: #f4f6fb; color: #1a1a2e; font-family: 'Segoe UI', 'DejaVu Sans', sans-serif; }
+QTabWidget::pane { border: 1px solid #ccd1e0; border-radius: 8px; }
+QTabBar::tab { padding: 8px 20px; font-size: 13px; font-weight: 600; border-radius: 6px 6px 0 0; }
+QTabBar::tab:selected { background: #1a73e8; color: white; }
+QTabBar::tab:!selected { background: #dde3f0; color: #444; }
+QPushButton { min-height: 40px; font-size: 13px; font-weight: 600; background: #1a73e8; color: white; border-radius: 8px; padding: 6px 16px; border: none; }
+QPushButton:hover { background: #1558b0; }
+QPushButton:disabled { background: #9db0d0; }
+QPushButton#danger { background: #d93025; }
+QPushButton#success { background: #188038; }
+QPushButton#secondary { background: #5f6368; }
+QLineEdit, QComboBox, QSpinBox { min-height: 36px; font-size: 13px; border: 2px solid #c8cedf; border-radius: 6px; padding: 4px 8px; background: white; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border: 2px solid #1a73e8; }
+QTextEdit { font-size: 13px; border: 2px solid #c8cedf; border-radius: 6px; background: white; }
+QGroupBox { font-size: 13px; font-weight: 700; border: 2px solid #c8cedf; border-radius: 8px; margin-top: 12px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #1a73e8; }
+QLabel { font-size: 13px; }
+QProgressBar { border: 2px solid #c8cedf; border-radius: 6px; text-align: center; font-weight: 700; height: 22px; }
+QProgressBar::chunk { background: #1a73e8; border-radius: 4px; }
+QCheckBox { font-size: 13px; spacing: 8px; }
+QStatusBar { font-size: 12px; color: #555; }
+"""
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.base_dir      = os.path.dirname(os.path.abspath(__file__))
+        self.env_path      = os.path.join(self.base_dir, ".env")
+        self.logs_dir      = os.path.join(self.base_dir, "logs")
+        self.data_dir      = os.path.join(self.base_dir, "data")
+        self.meta_dir      = os.path.join(self.data_dir, "metadata")
+        self.log_file      = os.path.join(self.logs_dir, "automation.log")
+        self.meta_file     = os.path.join(self.meta_dir, "runs.jsonl")
+        self.cv_path       = ""
+        self.company_path  = ""
+        self.letter_path   = ""
+        self._worker       = None
+        self._thread       = None
+        self._preview_buf  = []   # [(company, email, subject, body)]
+
+        os.makedirs(self.logs_dir, exist_ok=True)
+        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(self.meta_dir, exist_ok=True)
+
+        self.setWindowTitle("Job Application Automator v2")
+        self.setMinimumSize(980, 760)
+        self.setStyleSheet(STYLE)
+
+        self._build_ui()
+        self._load_env()
+
+    # ------------------------------------------------------------------ UI --
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(12, 12, 12, 8)
+
+        tabs = QTabWidget()
+        root.addWidget(tabs)
+
+        tabs.addTab(self._tab_setup(),    "⚙  Configuration")
+        tabs.addTab(self._tab_run(),      "▶  Lancement")
+        tabs.addTab(self._tab_preview(),  "📧  Aperçu emails")
+        tabs.addTab(self._tab_settings(), "🔧  Paramètres")
+        tabs.addTab(self._tab_history(),  "📋  Historique")
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Prêt")
+
+    # ---- Tab: Setup ----
+    def _tab_setup(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(14)
+
+        # Files
+        grp_files = QGroupBox("Fichiers")
+        ff = QFormLayout(grp_files)
+
+        row_cv = QHBoxLayout()
+        self.btn_cv   = QPushButton("Choisir CV (PDF)")
+        self.btn_cv.clicked.connect(self._pick_cv)
+        self.lbl_cv   = QLabel("Aucun fichier sélectionné")
+        self.lbl_cv.setWordWrap(True)
+        row_cv.addWidget(self.btn_cv, 1)
+        row_cv.addWidget(self.lbl_cv, 3)
+        ff.addRow(row_cv)
+
+        row_comp = QHBoxLayout()
+        self.btn_comp  = QPushButton("Liste entreprises (XLSX)")
+        self.btn_comp.clicked.connect(self._pick_company)
+        self.lbl_comp  = QLabel("Aucun fichier sélectionné")
+        self.lbl_comp.setWordWrap(True)
+        row_comp.addWidget(self.btn_comp, 1)
+        row_comp.addWidget(self.lbl_comp, 3)
+        ff.addRow(row_comp)
+
+        row_ltr = QHBoxLayout()
+        self.btn_letter = QPushButton("Lettre motivation (PDF) [optionnel]")
+        self.btn_letter.setObjectName("secondary")
+        self.btn_letter.clicked.connect(self._pick_letter)
+        self.lbl_letter = QLabel("Aucun fichier (optionnel)")
+        self.lbl_letter.setWordWrap(True)
+        row_ltr.addWidget(self.btn_letter, 1)
+        row_ltr.addWidget(self.lbl_letter, 3)
+        ff.addRow(row_ltr)
+
+        v.addWidget(grp_files)
+
+        # Credentials
+        grp_cred = QGroupBox("Compte ProtonMail")
+        cf = QFormLayout(grp_cred)
+        self.email_in = QLineEdit(); self.email_in.setPlaceholderText("vous@proton.me")
+        self.pass_in  = QLineEdit(); self.pass_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pass_in.setPlaceholderText("Mot de passe ProtonMail")
+        cf.addRow("Email ProtonMail:", self.email_in)
+        cf.addRow("Mot de passe:",     self.pass_in)
+
+        row_save = QHBoxLayout()
+        self.chk_save = QCheckBox("Mémoriser dans .env")
+        self.chk_save.setChecked(True)
+        btn_save_env  = QPushButton("Sauvegarder .env")
+        btn_save_env.setObjectName("secondary")
+        btn_save_env.clicked.connect(self._save_env)
+        row_save.addWidget(self.chk_save)
+        row_save.addStretch()
+        row_save.addWidget(btn_save_env)
+        cf.addRow(row_save)
+        v.addWidget(grp_cred)
+
+        # Test email
+        grp_test = QGroupBox("Email de test")
+        tf = QFormLayout(grp_test)
+        self.test_recipient = QLineEdit("sourovdeb.is@gmail.com")
+        tf.addRow("Destinataire test:", self.test_recipient)
+        btn_test = QPushButton("Envoyer email de test (avec CV joint)")
+        btn_test.setObjectName("success")
+        btn_test.clicked.connect(self._send_test)
+        tf.addRow(btn_test)
+        v.addWidget(grp_test)
+
+        v.addStretch()
+        return w
+
+    # ---- Tab: Run ----
+    def _tab_run(self):
+        w  = QWidget()
+        v  = QVBoxLayout(w)
+        v.setSpacing(12)
+
+        # Summary
+        self.run_summary = QLabel("Configurez les fichiers dans l'onglet Configuration puis lancez.")
+        self.run_summary.setWordWrap(True)
+        v.addWidget(self.run_summary)
+
+        # Progress
+        grp_prog = QGroupBox("Progression")
+        pv = QVBoxLayout(grp_prog)
+        self.progress_bar   = QProgressBar(); self.progress_bar.setValue(0)
+        self.progress_label = QLabel("0 / 0")
+        pv.addWidget(self.progress_bar)
+        pv.addWidget(self.progress_label)
+        v.addWidget(grp_prog)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.btn_start = QPushButton("▶  Lancer l'automatisation")
+        self.btn_start.setObjectName("success")
+        self.btn_start.clicked.connect(self._start_automation)
+        self.btn_stop  = QPushButton("⏹  Arrêter")
+        self.btn_stop.setObjectName("danger")
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self._stop_automation)
+        btn_row.addWidget(self.btn_start)
+        btn_row.addWidget(self.btn_stop)
+        v.addLayout(btn_row)
+
+        # Log display
+        v.addWidget(QLabel("Journal en direct:"))
+        self.log_display = QTextEdit(); self.log_display.setReadOnly(True)
+        self.log_display.setFont(QFont("Monospace", 11))
+        v.addWidget(self.log_display)
+
+        return w
+
+    # ---- Tab: Preview ----
+    def _tab_preview(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        self.preview_selector = QComboBox()
+        self.preview_selector.currentIndexChanged.connect(self._show_preview)
+        v.addWidget(QLabel("Sélectionner un email généré:"))
+        v.addWidget(self.preview_selector)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        self.preview_meta    = QLabel("—")
+        self.preview_meta.setWordWrap(True)
+        self.preview_subject = QLineEdit(); self.preview_subject.setReadOnly(True)
+        self.preview_body    = QTextEdit(); self.preview_body.setReadOnly(True)
+        top = QWidget(); tl = QFormLayout(top)
+        tl.addRow("Destinataire:", self.preview_meta)
+        tl.addRow("Objet:",        self.preview_subject)
+        splitter.addWidget(top)
+        splitter.addWidget(self.preview_body)
+        v.addWidget(splitter)
+        return w
+
+    # ---- Tab: Settings ----
+    def _tab_settings(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(14)
+
+        grp_run = QGroupBox("Paramètres d'exécution")
+        sf = QFormLayout(grp_run)
+
+        self.browser_sel = QComboBox(); self.browser_sel.addItems(["chromium", "firefox"])
+        sf.addRow("Navigateur:", self.browser_sel)
+
+        self.chk_headless = QCheckBox("Mode invisible (headless)"); self.chk_headless.setChecked(False)
+        sf.addRow(self.chk_headless)
+
+        self.chk_dry = QCheckBox("Dry run — générer mais ne PAS envoyer"); self.chk_dry.setChecked(True)
+        sf.addRow(self.chk_dry)
+
+        self.spin_max = QSpinBox(); self.spin_max.setRange(1, 500); self.spin_max.setValue(5)
+        sf.addRow("Max entreprises:", self.spin_max)
+
+        v.addWidget(grp_run)
+
+        grp_ai = QGroupBox("Intelligence artificielle — Fournisseur (optionnel)")
+        af = QFormLayout(grp_ai)
+
+        self.provider_sel = QComboBox()
+        self.provider_sel.addItems(["template (sans IA)", "anthropic", "mistral", "deepseek", "ollama"])
+        self.provider_sel.currentTextChanged.connect(self._on_provider_changed)
+        af.addRow("Fournisseur IA:", self.provider_sel)
+
+        self.api_key_in = QLineEdit()
+        self.api_key_in.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_in.setPlaceholderText("Clé API (Anthropic / Mistral / DeepSeek)")
+        af.addRow("Clé API:", self.api_key_in)
+
+        self.ollama_model_in = QLineEdit("mistral")
+        self.ollama_model_in.setPlaceholderText("Modèle Ollama (ex: mistral, llama3, gemma3)")
+        af.addRow("Modèle Ollama:", self.ollama_model_in)
+
+        self.ollama_url_in = QLineEdit("http://localhost:11434")
+        self.ollama_url_in.setPlaceholderText("URL Ollama (défaut: http://localhost:11434)")
+        af.addRow("URL Ollama:", self.ollama_url_in)
+
+        note = QLabel(
+            "• Template : aucune IA requise, email de qualité en français.\n"
+            "• Anthropic (Claude Haiku) : nécessite une clé API Anthropic (sk-ant-…).\n"
+            "• Mistral : nécessite une clé API Mistral (pip install mistralai).\n"
+            "• DeepSeek : nécessite une clé API DeepSeek (pip install openai).\n"
+            "• Ollama : modèle local gratuit — installez Ollama et lancez-le d'abord."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #555; font-size: 11px;")
+        af.addRow(note)
+        v.addWidget(grp_ai)
+
+        btn_save = QPushButton("Sauvegarder tous les paramètres")
+        btn_save.clicked.connect(self._save_env)
+        v.addWidget(btn_save)
+        v.addStretch()
+        return w
+
+    # ---- Tab: History ----
+    def _tab_history(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        self.history_view = QTextEdit(); self.history_view.setReadOnly(True)
+        self.history_view.setFont(QFont("Monospace", 11))
+        btn_refresh = QPushButton("Actualiser l'historique")
+        btn_refresh.setObjectName("secondary")
+        btn_refresh.clicked.connect(self._load_history)
+        v.addWidget(btn_refresh)
+        v.addWidget(self.history_view)
+        self._load_history()
+        return w
+
+    # ---------------------------------------------------------------- Logic --
+
+    def _on_provider_changed(self, text):
+        is_ollama = text == "ollama"
+        is_template = text == "template (sans IA)"
+        self.api_key_in.setEnabled(not is_ollama and not is_template)
+        self.ollama_model_in.setEnabled(is_ollama)
+        self.ollama_url_in.setEnabled(is_ollama)
+
+    def _log(self, msg):
+        self.log_display.append(msg)
+        ts = datetime.now().isoformat(timespec="seconds")
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg}\n")
+        except Exception:
+            pass
+        QApplication.processEvents()
+
+    def _load_env(self):
+        if os.path.exists(self.env_path):
+            load_dotenv(self.env_path, override=True)
+        self.email_in.setText(os.getenv("PROTON_USER", ""))
+        self.pass_in.setText(os.getenv("PROTON_PASS", ""))
+        self.browser_sel.setCurrentText(os.getenv("BROWSER", "chromium"))
+        self.chk_headless.setChecked(os.getenv("HEADLESS", "false").lower() == "true")
+        self.chk_dry.setChecked(os.getenv("DRY_RUN", "true").lower() == "true")
+        try:
+            self.spin_max.setValue(int(os.getenv("MAX_COMPANIES", "5")))
+        except ValueError:
+            pass
+        provider = os.getenv("PROVIDER", "template")
+        display = provider if provider in ["anthropic", "mistral", "deepseek", "ollama"] else "template (sans IA)"
+        self.provider_sel.setCurrentText(display)
+        self.api_key_in.setText(
+            os.getenv("ANTHROPIC_API_KEY") or
+            os.getenv("MISTRAL_API_KEY") or
+            os.getenv("DEEPSEEK_API_KEY") or ""
+        )
+        self.ollama_model_in.setText(os.getenv("OLLAMA_MODEL", "mistral"))
+        self.ollama_url_in.setText(os.getenv("OLLAMA_URL", "http://localhost:11434"))
+        self._on_provider_changed(self.provider_sel.currentText())
+        self._log("Paramètres chargés depuis .env")
+
+    def _save_env(self):
+        provider_raw = self.provider_sel.currentText()
+        provider = provider_raw if provider_raw != "template (sans IA)" else "template"
+        api_key  = self.api_key_in.text().strip()
+        lines = [
+            f"PROTON_USER={self.email_in.text().strip()}",
+            f"PROTON_PASS={self.pass_in.text().strip()}",
+            f"BROWSER={self.browser_sel.currentText()}",
+            f"HEADLESS={str(self.chk_headless.isChecked()).lower()}",
+            f"DRY_RUN={str(self.chk_dry.isChecked()).lower()}",
+            f"MAX_COMPANIES={self.spin_max.value()}",
+            f"PROVIDER={provider}",
+            f"ANTHROPIC_API_KEY={api_key if provider == 'anthropic' else ''}",
+            f"MISTRAL_API_KEY={api_key if provider == 'mistral' else ''}",
+            f"DEEPSEEK_API_KEY={api_key if provider == 'deepseek' else ''}",
+            f"OLLAMA_MODEL={self.ollama_model_in.text().strip()}",
+            f"OLLAMA_URL={self.ollama_url_in.text().strip()}",
+        ]
+        with open(self.env_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        self.status_bar.showMessage("Paramètres sauvegardés dans .env", 3000)
+
+    def _pick_cv(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Sélectionner le CV", "", "PDF (*.pdf)")
+        if f:
+            self.cv_path = f
+            self.lbl_cv.setText(os.path.basename(f))
+            self._log(f"CV: {f}")
+
+    def _pick_company(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Liste des entreprises", "", "Excel (*.xlsx *.xls)")
+        if f:
+            self.company_path = f
+            self.lbl_comp.setText(os.path.basename(f))
+            self._log(f"Entreprises: {f}")
+
+    def _pick_letter(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Lettre de motivation", "", "PDF (*.pdf)")
+        if f:
+            self.letter_path = f
+            self.lbl_letter.setText(os.path.basename(f))
+            self._log(f"Lettre: {f}")
+
+    def _validate_setup(self, require_cv=True, require_company=True):
+        errors = []
+        if not self.email_in.text().strip():
+            errors.append("Email ProtonMail manquant")
+        if not self.pass_in.text().strip():
+            errors.append("Mot de passe ProtonMail manquant")
+        if require_cv and not self.cv_path:
+            errors.append("Aucun CV sélectionné")
+        if require_company and not self.company_path:
+            errors.append("Aucune liste d'entreprises sélectionnée")
+        if errors:
+            QMessageBox.warning(self, "Configuration incomplète", "\n".join(errors))
             return False
         return True
 
-    def are_inputs_valid(self):
-        if not self.are_credentials_valid(): return False
-        if not self.cv_path or not self.company_list_path:
-            self.log("Please select both a CV and a company list file.")
-            return False
-        return True
+    def _send_test(self):
+        if not self._validate_setup(require_company=False):
+            return
+        if self.chk_save.isChecked():
+            self._save_env()
+
+        recipient = self.test_recipient.text().strip() or "sourovdeb.is@gmail.com"
+        self._log(f"Envoi email de test à {recipient} …")
+
+        cv_text = extract_cv_text(self.cv_path) if self.cv_path else ""
+        company_info = {
+            "company_name": "TEST – Job Automator",
+            "city": "La Réunion",
+            "ca": "",
+            "postal_code": "",
+        }
+        research = {"about_text": "Ceci est un email de test automatisé."}
+        provider_raw = self.provider_sel.currentText()
+        provider = provider_raw if provider_raw != "template (sans IA)" else "template"
+        subject, body = generate_email(
+            cv_text or "CV de Sourov Deb, formateur CELTA.",
+            company_info, research,
+            api_key      = self.api_key_in.text().strip() or None,
+            provider     = provider,
+            ollama_model = self.ollama_model_in.text().strip(),
+            ollama_url   = self.ollama_url_in.text().strip(),
+        )
+        subject = "[TEST] " + subject
+
+        def _run():
+            ok = send_email_with_protonmail(
+                username        = self.email_in.text().strip(),
+                password        = self.pass_in.text().strip(),
+                recipient_email = recipient,
+                subject         = subject,
+                body            = body,
+                attachment_path = self.cv_path or None,
+                browser_name    = self.browser_sel.currentText(),
+                headless        = self.chk_headless.isChecked(),
+            )
+            self._log("Test : OK !" if ok else "Test : ECHEC")
+            self.status_bar.showMessage("Test envoyé !" if ok else "Echec du test")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _start_automation(self):
+        if not self._validate_setup():
+            return
+        if self.chk_save.isChecked():
+            self._save_env()
+
+        self._preview_buf.clear()
+        self.preview_selector.clear()
+        self.progress_bar.setValue(0)
+
+        provider_raw = self.provider_sel.currentText()
+        provider = provider_raw if provider_raw != "template (sans IA)" else "template"
+        cfg = {
+            "cv_path":       self.cv_path,
+            "company_path":  self.company_path,
+            "letter_path":   self.letter_path,
+            "proton_user":   self.email_in.text().strip(),
+            "proton_pass":   self.pass_in.text().strip(),
+            "browser":       self.browser_sel.currentText(),
+            "headless":      self.chk_headless.isChecked(),
+            "dry_run":       self.chk_dry.isChecked(),
+            "max_companies": self.spin_max.value(),
+            "provider":      provider,
+            "api_key":       self.api_key_in.text().strip() or None,
+            "ollama_model":  self.ollama_model_in.text().strip(),
+            "ollama_url":    self.ollama_url_in.text().strip(),
+        }
+
+        self.run_summary.setText(
+            f"CV: {os.path.basename(cfg['cv_path'])} | "
+            f"Entreprises: {os.path.basename(cfg['company_path'])} | "
+            f"Max: {cfg['max_companies']} | "
+            f"Dry run: {cfg['dry_run']}"
+        )
+
+        self._worker = AutomationWorker(cfg)
+        self._thread = QThread()
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.log_signal.connect(self._log)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.preview_ready.connect(self._on_preview)
+        self._worker.finished.connect(self._on_finished)
+
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self._thread.start()
+
+    def _stop_automation(self):
+        if self._worker:
+            self._worker.stop()
+
+    def _on_progress(self, current, total):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.progress_label.setText(f"{current} / {total}")
+
+    def _on_preview(self, company, email, subject, body):
+        self._preview_buf.append((company, email, subject, body))
+        label = f"{company} → {email}"
+        self.preview_selector.addItem(label)
+
+    def _show_preview(self, idx):
+        if 0 <= idx < len(self._preview_buf):
+            company, email, subject, body = self._preview_buf[idx]
+            self.preview_meta.setText(f"{company}  <{email}>")
+            self.preview_subject.setText(subject)
+            self.preview_body.setPlainText(body)
+
+    def _on_finished(self, stats):
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait()
+        self._save_run_meta(stats)
+        self._load_history()
+        self.status_bar.showMessage(
+            f"Terminé – Envoyés: {stats.get('sent',0)} | Ignorés: {stats.get('skipped',0)} | Echecs: {stats.get('failed',0)}"
+        )
+
+    def _save_run_meta(self, stats):
+        record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "browser":   self.browser_sel.currentText(),
+            "dry_run":   self.chk_dry.isChecked(),
+            "stats":     {k: v for k, v in stats.items() if k != "run_log"},
+            "log":       stats.get("run_log", []),
+        }
+        try:
+            with open(self.meta_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            self._log(f"Avertissement: impossible de sauvegarder les métadonnées ({e})")
+
+    def _load_history(self):
+        self.history_view.clear()
+        if not os.path.exists(self.meta_file):
+            self.history_view.setPlainText("Aucun historique disponible.")
+            return
+        lines = []
+        try:
+            with open(self.meta_file, "r", encoding="utf-8") as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    rec = json.loads(raw)
+                    ts  = rec.get("timestamp", "?")
+                    s   = rec.get("stats", {})
+                    dr  = "DRY" if rec.get("dry_run") else "LIVE"
+                    lines.append(
+                        f"[{ts}] [{dr}] "
+                        f"Traités:{s.get('processed',0)}  "
+                        f"Envoyés:{s.get('sent',0)}  "
+                        f"Ignorés:{s.get('skipped',0)}  "
+                        f"Echecs:{s.get('failed',0)}"
+                    )
+        except Exception as e:
+            lines.append(f"Erreur lecture historique: {e}")
+        self.history_view.setPlainText("\n".join(reversed(lines)))
 
 
-if __name__ == '__main__':
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
     app = QApplication(sys.argv)
-    ex = JobAutomatorApp()
-    ex.show()
+    app.setFont(QFont("Segoe UI", 12))
+    win = MainWindow()
+    win.show()
     sys.exit(app.exec())
