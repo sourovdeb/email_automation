@@ -1,6 +1,17 @@
-# Email Automation (Accessible GUI)
+# Job Automation Dashboard
 
-This project automates personalized job outreach emails with:
+This project automates personalized job outreach emails through a WordPress-inspired
+dashboard interface. It requires no AI to operate day-to-day.
+
+## Features
+
+1. **Dashboard tab** — At-a-Glance stats (runs, emails sent, companies processed), quick-start buttons, scheduler status.
+2. **Settings tab** — File selection, ProtonMail credentials, browser and run options.
+3. **Schedule tab** — Set a daily run time that fires automatically — no AI, no cloud service needed.
+4. **Logs tab** — Live log panel with persistent file backup.
+
+Underlying automation:
+
 1. Python orchestration
 2. Playwright + Chromium/Firefox for web automation
 3. Open-source search workflow for company profiling
@@ -18,7 +29,7 @@ The GUI is accessibility-focused (large controls, high contrast, clear flow) for
    - Type: XLSX
    - Must include at least one company name column (for example `NOM`)
    - Should include an email/contact column when available
-3. Login options:
+3. Login options (Settings tab):
    - Proton email username
    - Proton password
    - Browser choice (`chromium` or `firefox`)
@@ -41,7 +52,7 @@ The app creates and uses these paths under the project root:
 
 ## .env Format
 
-Use this format in `.env`:
+Use this format in `.env` (the Settings tab writes this file automatically):
 
 ```env
 PROTON_USER=your_user@proton.me
@@ -50,6 +61,8 @@ BROWSER=chromium
 HEADLESS=false
 DRY_RUN=true
 MAX_COMPANIES=5
+SCHEDULE_TIME=09:00
+SCHEDULE_ENABLED=false
 ```
 
 ## Setup
@@ -76,12 +89,23 @@ python main_app.py
 
 ## Usage Flow
 
-1. Select CV (PDF).
-2. Select company list (XLSX).
-3. Confirm or edit login options.
-4. Save login options to `.env` (button or checkbox auto-save).
-5. Run `Send Test Email` first.
-6. Run `Start Automation`.
+1. Open the **Settings** tab.
+2. Select CV (PDF) and company list (XLSX).
+3. Enter ProtonMail credentials and run options.
+4. Click **Save Settings to .env**.
+5. Click **Send Test Email** to verify credentials.
+6. Click **Start Automation** to run immediately, **or**
+7. Open the **Schedule** tab, set a daily time, and enable the scheduler.
+8. Monitor progress in the **Logs** tab.
+
+## Scheduler (No AI Required)
+
+The built-in scheduler (`scheduler.py`) runs entirely on the local Linux machine:
+
+- Enable/disable via the **Schedule** tab checkbox.
+- Set the daily run time with the time picker (HH:MM, 24-hour).
+- The schedule persists across app restarts via `.env` (`SCHEDULE_TIME`, `SCHEDULE_ENABLED`).
+- A background thread wakes at the configured time and triggers the full automation.
 
 ## Graceful Fallback Hierarchy
 
@@ -124,7 +148,7 @@ Adaptive behavior:
 ## Detailed Logging
 
 The app logs to:
-1. GUI log panel (live feedback)
+1. GUI log panel — **Logs** tab (live feedback)
 2. `logs/automation.log` (persistent log with timestamps)
 
 Typical entries:
@@ -146,6 +170,7 @@ Python + Playwright role:
 2. Deterministic automation
 3. Logging and metadata history
 4. Reliability tuning via local run outcomes
+5. Scheduled execution without AI
 
 AI role:
 1. Architect and engineer when requested
