@@ -13,6 +13,7 @@ from data_parser import read_company_list, extract_cv_text
 from researcher import search_company_website
 from email_generator import generate_email_body
 from email_sender import send_email_with_protonmail
+from wordpress_dialog import WordPressDialog
 
 class JobAutomatorApp(QWidget):
     def __init__(self):
@@ -117,6 +118,16 @@ class JobAutomatorApp(QWidget):
         self.btn_start = QPushButton('Start Automation', self)
         self.btn_start.clicked.connect(self.start_automation)
         layout.addWidget(self.btn_start)
+
+        self.btn_wordpress = QPushButton('WordPress Automator', self)
+        self.btn_wordpress.setToolTip('Open the WordPress post editor to create, schedule and publish blog posts')
+        self.btn_wordpress.setStyleSheet(
+            "QPushButton { background: #2271b1; color: white; }"
+            "QPushButton:hover { background: #135e96; }"
+            "QPushButton:focus { border: 3px solid #ff8c00; }"
+        )
+        self.btn_wordpress.clicked.connect(self.open_wordpress_automator)
+        layout.addWidget(self.btn_wordpress)
 
         # Log display
         self.log_display = QTextEdit(self)
@@ -405,6 +416,10 @@ class JobAutomatorApp(QWidget):
 
         self.save_run_metadata()
         self.log("--- Automation Finished ---")
+
+    def open_wordpress_automator(self):
+        dialog = WordPressDialog(self)
+        dialog.exec()
 
     def are_credentials_valid(self):
         if not self.email_input.text() or not self.password_input.text():
