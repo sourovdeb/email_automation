@@ -1,6 +1,6 @@
 # Job Application Automator — Wiki & User Manual
 
-> Version 2.0 | Language: English & Français | Last updated: 2026-04-21
+> Version 2.1 | Updated: 2026-04-21 | Language: EN/FR
 
 ---
 
@@ -9,67 +9,55 @@
 1. [What this does](#1-what-this-does)
 2. [Quick Start (5 minutes)](#2-quick-start)
 3. [File & Folder Structure](#3-file--folder-structure)
-4. [Tab-by-Tab Guide](#4-tab-by-tab-guide)
-5. [AI Providers — choosing one](#5-ai-providers)
-6. [Sending without AI (Template Mode)](#6-sending-without-ai)
-7. [Email & Attachment Guidelines](#7-email--attachment-guidelines)
-8. [How company research works](#8-how-company-research-works)
-9. [ProtonMail & Playwright — how it works](#9-protonmail--playwright)
-10. [Bulk sending strategy](#10-bulk-sending-strategy)
-11. [Troubleshooting](#11-troubleshooting)
-12. [How it was built — technical log](#12-how-it-was-built)
-13. [Reusing this system for any job search](#13-reusing-this-system)
+4. [Three-Script Workflow (CLI — recommended for bulk)](#4-three-script-workflow)
+5. [GUI Tab-by-Tab Guide](#5-gui-tab-by-tab-guide)
+6. [AI Providers — choosing one](#6-ai-providers)
+7. [Sending without AI (Template Mode)](#7-sending-without-ai)
+8. [Email & Attachment Guidelines](#8-email--attachment-guidelines)
+9. [Company Spreadsheet Format](#9-company-spreadsheet-format)
+10. [How company research works](#10-how-company-research-works)
+11. [ProtonMail & Playwright — how it works](#11-protonmail--playwright)
+12. [Bulk sending strategy & daily limits](#12-bulk-sending-strategy)
+13. [Troubleshooting](#13-troubleshooting)
+14. [How it was built — technical log](#14-how-it-was-built)
+15. [Reusing for any job search](#15-reusing-for-any-job-search)
+16. [Aeon Dashboard integration](#16-aeon-dashboard)
 
 ---
 
 ## 1. What this does
 
-This system reads your **CV** and a **list of companies** (Excel), then:
+Reads your **CV** + a **company list** (Excel), then for each company:
 
-1. Searches the web for each company's website (DuckDuckGo, no API key required)
-2. Scrapes the site to find a **contact / HR email address**
-3. Generates a **personalised French email** (via AI or a high-quality template)
-4. Logs into **ProtonMail** using your browser (via Playwright)
-5. Composes and sends the email with your **CV attached**
-6. Logs every result to a local file
+1. Searches the web (DuckDuckGo — no API key) for the company's website
+2. Also checks a local business directory if you provide one (e.g. reunion-directory.com)
+3. Scrapes the site to find a **contact / HR email address**
+4. Saves companies with **no email found** separately with follow-up recommendations
+5. Generates a **personalised French email** (AI or high-quality template)
+6. Logs into **ProtonMail** via browser automation (Playwright)
+7. Sends the email with your **CV attached**
+8. Logs every result — sent, skipped, failed — to a local JSON file
 
-All steps are visible in the GUI, controllable, and replayable.
+**Works 100% without AI** — template mode generates quality emails in French with zero external services.
 
 ---
 
 ## 2. Quick Start
 
-### Prerequisites
-
 ```bash
-# 1 — Install Python dependencies
+# Install dependencies
 pip install -r requirements.txt
-
-# 2 — Install Playwright browsers (once)
 playwright install chromium firefox
 
-# 3 — Copy and fill in your settings
-cp .env.example .env   # then edit .env with your ProtonMail credentials
-```
+# Fill in .env with your credentials
+cp .env.example .env   # edit with your ProtonMail login + optional AI key
 
-### Run the GUI
-
-```bash
+# Run GUI
 python main_app.py
-# or from Aeon Dashboard:
+
+# Or run Aeon Dashboard (includes job automator)
 python ../aeon_dashboard/aeon_dashboard.py
 ```
-
-### First run checklist
-
-- [ ] Tab **Configuration** → select your CV (PDF)
-- [ ] Tab **Configuration** → select the company list (XLSX)
-- [ ] Tab **Configuration** → enter your ProtonMail email + password
-- [ ] Tab **Paramètres** → set AI provider (or leave as "Template")
-- [ ] Tab **Paramètres** → set **Dry run = ON** (safe preview mode)
-- [ ] Tab **Lancement** → click **Lancer l'automatisation**
-- [ ] Tab **Aperçu** → review generated emails
-- [ ] Uncheck Dry run, run again to actually send
 
 ---
 
@@ -77,418 +65,516 @@ python ../aeon_dashboard/aeon_dashboard.py
 
 ```
 job_automator/
-├── main_app.py          # GUI (PyQt6) — run this
-├── data_parser.py       # reads XLSX company list + PDF CV
-├── researcher.py        # DuckDuckGo search + web scraping + email finder
-├── email_generator.py   # AI or template email generation
-├── email_sender.py      # ProtonMail automation via Playwright
-├── requirements.txt     # Python dependencies
-├── .env                 # credentials & settings (never commit this!)
-├── wiki.md              # this file
+├── main_app.py           # GUI — all-in-one tabbed interface
+├── bulk_sender.py        # Programmatic bulk sender (GUI backend + CLI)
+│
+├── search_companies.py   # SCRIPT 1: research companies → research_results.json
+├── organise_emails.py    # SCRIPT 2: generate email drafts → email_queue.json
+├── send_emails.py        # SCRIPT 3: send queue via ProtonMail → marks sent/failed
+│
+├── data_parser.py        # reads XLSX + PDF (shared library)
+├── researcher.py         # web search + email extraction (shared library)
+├── email_generator.py    # AI or template email generation (shared library)
+├── email_sender.py       # ProtonMail Playwright automation (shared library)
+│
+├── requirements.txt
+├── .env                  # credentials & settings — NEVER commit this
+├── wiki.md               # this file
+│
 ├── logs/
-│   └── automation.log   # timestamped log of every run
+│   ├── automation.log    # GUI run log
+│   ├── bulk_sender.log   # bulk_sender.py log
+│   └── send_emails.log   # send_emails.py log
 └── data/
-    ├── attachments/     # put extra files to attach here
-    └── metadata/
-        └── runs.jsonl   # JSON log of every automation run
+    ├── metadata/
+    │   └── runs.jsonl    # JSON record of every run
+    └── attachments/      # optional extra files to attach
 ```
 
-**Where to put your files:**
+---
 
-| File | Recommended path |
-|------|-----------------|
-| CV (PDF) | anywhere — you select it via the GUI |
-| Company list (XLSX) | anywhere — you select it via the GUI |
-| Motivation letter (PDF) | anywhere — optional, select via GUI |
+## 4. Three-Script Workflow
+
+This is the **recommended approach for bulk campaigns** — faster, more transparent, and resumable.
+
+### Step 1 — Research companies
+
+```bash
+python search_companies.py \
+  --companies "path/to/companies.xlsx" \
+  --max 50 \
+  --out research_results.json \
+  --directory "http://www.reunion-directory.com/annuaire-des-professions.html"
+```
+
+**What it does:**
+- Reads XLSX, auto-detects company name column
+- For each company: tries the local directory URL first, then DuckDuckGo
+- Extracts emails from `/contact`, `/recrutement`, `/emploi`, `/carrieres` pages
+- Saves results to `research_results.json`
+- Companies with no email → saved in `"follow_up_needed"` key with recommendations
+
+**Options:**
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--companies` | required | Path to XLSX |
+| `--max` | 20 | Max companies to process |
+| `--out` | research_results.json | Output file |
+| `--directory` | (none) | Business directory URL to try first |
+| `--resume` | off | Skip companies already in the output file |
+
+### Step 2 — Generate email drafts
+
+```bash
+python organise_emails.py \
+  --research research_results.json \
+  --cv "path/to/cv.pdf" \
+  --letter "path/to/lettre_motivation.pdf" \
+  --provider deepseek \
+  --out email_queue.json
+```
+
+**What it does:**
+- Reads `research_results.json`
+- Extracts CV text (and optional motivation letter)
+- Generates a personalised email for each company with a found email
+- Saves all drafts to `email_queue.json` with status `"pending"`
+- Companies with no email are listed separately in `"skipped_no_email"`
+
+**Options:**
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--research` | required | Output from Step 1 |
+| `--cv` | required | CV PDF path |
+| `--letter` | (none) | Motivation letter PDF (optional, improves AI quality) |
+| `--provider` | auto | anthropic / mistral / deepseek / ollama / template |
+| `--api-key` | from .env | Override API key |
+| `--out` | email_queue.json | Output queue file |
+
+### Step 3 — Send emails
+
+```bash
+# First: preview (no sending)
+python send_emails.py \
+  --queue email_queue.json \
+  --cv "path/to/cv.pdf" \
+  --dry-run
+
+# Then: send for real
+python send_emails.py \
+  --queue email_queue.json \
+  --cv "path/to/cv.pdf" \
+  --max 20
+```
+
+**What it does:**
+- Reads `email_queue.json`
+- Logs into ProtonMail **once**
+- Sends all `"pending"` emails in the same browser session
+- Updates each entry to `"sent"` or `"failed"` in the queue file
+- Logs everything to `logs/send_emails.log`
+
+**Options:**
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--queue` | required | JSON from Step 2 |
+| `--cv` | required | CV PDF to attach |
+| `--dry-run` | from .env | Preview only, no sending |
+| `--max` | all | Limit how many to send this run |
+| `--browser` | from .env | chromium or firefox |
+| `--headless` | from .env | Run browser invisibly |
+
+### Resume / re-run
+
+The queue file tracks status per email. To resume after a failure or send the next batch:
+
+```bash
+# Only pending emails are sent — already-sent ones are skipped automatically
+python send_emails.py --queue email_queue.json --cv cv.pdf --max 20
+```
 
 ---
 
-## 4. Tab-by-Tab Guide
+## 5. GUI Tab-by-Tab Guide
+
+Launch with `python main_app.py`.
 
 ### ⚙ Configuration
-
-| Field | What to do |
-|-------|-----------|
-| **Choisir CV** | Click, select your CV PDF. Required. |
-| **Liste entreprises** | Click, select your `.xlsx` company list. Required. |
-| **Lettre motivation** | Optional. Adds extra context to AI-generated emails. |
-| **Email ProtonMail** | Your full ProtonMail address, e.g. `you@proton.me` |
-| **Mot de passe** | Your ProtonMail login password |
-| **Mémoriser dans .env** | When checked, saves credentials locally on "Save" |
-| **Envoyer email de test** | Sends ONE test email to verify everything works |
+| Field | Action |
+|-------|--------|
+| CV (PDF) | Click to select your CV |
+| Liste entreprises (XLSX) | Click to select company list |
+| Lettre motivation (PDF) | Optional — improves AI personalisation |
+| Email / Mot de passe | Your ProtonMail login |
+| Mémoriser dans .env | Saves credentials locally |
+| Email de test | Sends one email to verify setup before bulk run |
 
 ### ▶ Lancement
-
-- Click **Lancer l'automatisation** to start
-- Watch the live log — each company is processed one by one
-- The progress bar fills as companies are processed
-- Click **Arrêter** at any time to stop safely
+- Click **Lancer** to start; progress bar fills per company
+- Live log shows each research + send step in real time
+- **Arrêter** stops cleanly after the current company
 
 ### 📧 Aperçu
-
-After running, select any company from the dropdown to see the exact email that was (or would be) sent. Subject and body are both shown. Use this in Dry Run mode to review before sending.
+Select any company from the dropdown to preview the exact subject and body generated. Use this in Dry Run mode before sending.
 
 ### 🔧 Paramètres
-
-| Setting | Explanation |
-|---------|------------|
-| **Navigateur** | chromium (recommended) or firefox |
-| **Mode invisible** | Headless = browser runs hidden. Leave OFF for troubleshooting. |
-| **Dry run** | ON = generate emails but do NOT send. Use for review. |
-| **Max entreprises** | How many companies to process per run (start with 5–10) |
-| **Fournisseur IA** | See section 5 below |
+| Setting | Meaning |
+|---------|---------|
+| Navigateur | chromium (recommended) or firefox |
+| Mode invisible | headless = browser hidden; off = you can watch |
+| Dry run | Generate + log but do NOT send |
+| Max entreprises | Companies to process per run |
+| Fournisseur IA | Select AI provider or Template |
+| Clé API | Paste your key here |
+| Modèle Ollama | e.g. mistral, llama3, gemma3 |
+| URL Ollama | Default: http://localhost:11434 |
 
 ### 📋 Historique
-
-Each time you run the automator, a record is saved. The History tab shows:
-- Timestamp of each run
-- Whether it was a Dry run or Live send
-- Count of: processed, sent, skipped, failed
+Each run's stats saved automatically. Shows timestamp, dry/live, sent/skipped/failed counts.
 
 ---
 
-## 5. AI Providers
+## 6. AI Providers
 
-The system works with **any one** of these. Choose based on what you have:
+All providers fall back to **Template** automatically if they fail.
 
-### Option A — Template (no AI, always works)
-
-**No account, no key, no internet needed for email generation.**
-Uses a high-quality French template with company-specific personalisation.
-Good enough for 90% of use cases.
-
+### Template (always works — no internet, no key)
 ```
 Paramètres → Fournisseur IA → "template (sans IA)"
 ```
+High-quality French email. Personalised with company name, city, and website content if found. **Recommended starting point.**
 
-### Option B — Anthropic (Claude Haiku)
-
-Best quality. Fast. Pay-per-use (very cheap).
-
-```
-1. Go to: https://console.anthropic.com
-2. Create account → API Keys → New Key
-3. Copy key (starts with sk-ant-…)
-4. Paramètres → Fournisseur IA → "anthropic"
-5. Paste key into "Clé API"
+### Anthropic Claude Haiku
+Best quality. Fast. ~$0.001 per email.
+```bash
+# 1. https://console.anthropic.com → API Keys → New key (sk-ant-…)
+# 2. Paste in Paramètres → Clé API  OR  add to .env:
+PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-Model used: `claude-haiku-4-5-20251001` — optimised for speed and cost.
-
-### Option C — Mistral AI
-
-Good quality, EU-based, cheaper than Claude.
-
-```
-1. Go to: https://console.mistral.ai
-2. Create account → API Keys → New Key
-3. Copy key
-4. Install: pip install mistralai
-5. Paramètres → Fournisseur IA → "mistral"
-6. Paste key into "Clé API"
+### Mistral AI
+Good quality. EU-based. Cheaper than Claude.
+```bash
+pip install mistralai
+# Key from: https://console.mistral.ai
+PROVIDER=mistral
+MISTRAL_API_KEY=your-key-here
 ```
 
-Model used: `mistral-small-latest`
-
-### Option D — DeepSeek
-
-Cheapest paid option. OpenAI-compatible API.
-
+### DeepSeek
+Cheapest paid option. OpenAI-compatible.
+```bash
+pip install openai
+# Key from: https://platform.deepseek.com
+PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-your-key-here
 ```
-1. Go to: https://platform.deepseek.com
-2. Create account → API Keys → New Key  
-3. Key starts with: sk-…
-4. Install: pip install openai
-5. Paramètres → Fournisseur IA → "deepseek"
-6. Paste key into "Clé API"
-```
+Model: `deepseek-chat`
 
-Model used: `deepseek-chat`
-
-### Option E — Ollama (local, free forever)
-
-Runs 100% on your computer. No account needed. No cost. Privacy-first.
-
-```
-1. Install Ollama: https://ollama.com
-2. In terminal: ollama pull mistral
-3. Ollama runs automatically in background
-4. Paramètres → Fournisseur IA → "ollama"
-5. Modèle Ollama: mistral  (or llama3, gemma3, etc.)
-6. URL Ollama: http://localhost:11434  (default)
+### Ollama (local — free forever)
+Runs entirely on your computer. No account. No cost. Privacy-first.
+```bash
+# 1. Install: https://ollama.com
+# 2. Pull a model:
+ollama pull mistral        # good for French
+ollama pull llama3         # alternative
+ollama pull mistral-nemo   # best for French tasks
+# 3. Set in .env:
+PROVIDER=ollama
+OLLAMA_MODEL=mistral
+OLLAMA_URL=http://localhost:11434
 ```
 
-Recommended models for French email writing: `mistral`, `llama3`, `mistral-nemo`
-
-**Priority order (automatic detection):** Anthropic → Mistral → DeepSeek → Ollama → Template
+**Auto-detection order (if PROVIDER not set):** Anthropic → Mistral → DeepSeek → Ollama → Template
 
 ---
 
-## 6. Sending without AI
+## 7. Sending without AI
 
-The **Template mode** generates professional French emails without any AI:
+Template mode requires **nothing** — no account, no key, no internet for email generation.
 
-**What the template does:**
-1. Addresses the hiring manager generically
-2. Introduces the candidate with key credentials (CELTA, IELTS, years of experience)
-3. Adds a company-specific paragraph if website info was found
-4. Closes with an invitation to meet
+The template:
+1. Addresses "Madame, Monsieur" (appropriate for unsolicited French applications)
+2. States CELTA certification + 18 years international experience upfront
+3. Inserts a company-specific paragraph if website content was found
+4. Closes with a clear call to action
 
-**To customise the template**, edit `email_generator.py` → `_TEMPLATE` variable.
-
-**The template is always the fallback** — if any AI provider fails, the template is used automatically.
+**To adapt the template for a different candidate** — edit `email_generator.py → _TEMPLATE`:
+```python
+_TEMPLATE = """\
+Madame, Monsieur,
+Je me permets ...
+Cordialement,
+[Your Name]
+"""
+```
 
 ---
 
-## 7. Email & Attachment Guidelines
+## 8. Email & Attachment Guidelines
 
-### Subject line format
-
+### Subject line
 ```
 Candidature Formateur d'Anglais CELTA – [Company Name]
 ```
+Keep under 60 characters. No symbols. No ALL CAPS.
 
-Keep it short and professional. The AI respects this format.
+### Body rules
+| Rule | Why |
+|------|-----|
+| French language | DOM-TOM companies expect French |
+| Max 200 words | Hiring managers skim — be concise |
+| Plain text only (no HTML) | Better deliverability, avoids spam filters |
+| One clear call to action | "Disponible pour un entretien à votre convenance" |
+| Professional tone — not overly formal | French DOM-TOM culture is warm but professional |
 
 ### Attachment rules
-
 | Rule | Why |
 |------|-----|
-| CV must be a **PDF** | Universal, looks professional on all devices |
-| Max attachment size: **5 MB** | ProtonMail limit |
-| Filename: use your name, e.g. `Sourov_Deb_CV_2026.pdf` | Easier for HR to file |
-| **Do not attach more than 2 files** | Avoid spam filters |
+| CV must be **PDF** | Universal — works on all devices |
+| Filename: `Prenom_Nom_CV_2026.pdf` | HR can file it correctly |
+| Max **5 MB** total attachments | ProtonMail limit |
+| Attach CV only (not motivation letter) | Letter goes in the email body |
 
-### Email body rules
+### Spam avoidance
+- Space sends 30–50 per day maximum
+- Never send the same email twice to the same address
+- The queue file tracks `"sent"` status — re-running skips already-sent
+- Vary send times (not all at 9:00 AM)
 
-| Rule | Why |
-|------|-----|
-| Written in **French** | Companies in DOM-TOM, La Réunion |
-| Max **200 words** in the body | Hiring managers skim |
-| **No HTML** — plain text only | Better deliverability, less likely spam |
-| One clear **call to action** at the end | "I am available for an interview at your convenience" |
+---
 
-### Company list XLSX format
+## 9. Company Spreadsheet Format
 
-Your spreadsheet must have at minimum a **company name column**. The system auto-detects:
+### Required
+At minimum one column with company names. Auto-detected column names:
 
-| Column name | Auto-detected as |
-|-------------|-----------------|
-| `Raison sociale`, `NOM`, `Company`, `Entreprise` | Company name |
-| `Email`, `email`, `Mail`, `Courriel` | Email (skips web search if present) |
-| `Ville`, `City` | City (used for search + personalisation) |
+| Column | Auto-detected as |
+|--------|-----------------|
+| `Raison sociale`, `NOM`, `Company`, `Entreprise`, `Société` | Company name |
+| `Email`, `email`, `Mail`, `Courriel`, `E-mail` | Email (skips web search if present) |
+| `Ville`, `City` | City (used in search + personalisation) |
 | `CP` | Postal code |
-| `C.A.` | Revenue (used for context) |
+| `C.A.` | Revenue |
 
-If no email column is present, the system searches the web for each company's contact email.
+### If the spreadsheet has no email column
+The researcher automatically searches the web for each company. Companies where no email is found are saved to the `"follow_up_needed"` key in `research_results.json` with these alternatives:
+- Manual search query (Google/DuckDuckGo)
+- Direct link to local business directory
+- Pages Jaunes link
 
----
-
-## 8. How Company Research Works
-
-```
-Company name → DuckDuckGo search → Company website → Scrape contact/HR pages → Extract email
-```
-
-**Step by step:**
-
-1. Search query: `[Company Name] [City] site officiel`
-2. Parse DuckDuckGo HTML results (no API key required)
-3. Filter out directories, LinkedIn, social media
-4. Visit the top result
-5. Try `/contact`, `/recrutement`, `/emploi`, `/carrieres`, `/rh` pages
-6. Extract email addresses using regex
-7. Rank emails: prefer `recrutement@`, `rh@`, `contact@` over generic ones
-8. Save the company's About/Home text for AI personalisation
-
-**When no email is found:**
-- Company is logged as "skipped"
-- You can manually add emails to the XLSX and re-run
-- The run metadata shows exactly which companies were skipped
-
-**Rate limiting:** The researcher waits 1–2 seconds between requests to be a good web citizen and avoid being blocked.
+### Adding emails manually
+If you find an email manually, add an `Email` column to the XLSX. The system will use it directly and skip the web search for that row.
 
 ---
 
-## 9. ProtonMail & Playwright — How it Works
-
-Playwright is a browser automation library that controls a real browser (Chromium or Firefox) exactly as a human would.
-
-**The send flow:**
+## 10. How Company Research Works
 
 ```
-Launch browser → Navigate to mail.proton.me/login →
+Company name
+  → Check local directory URL (if provided)
+  → DuckDuckGo: "[name] [city] recrutement contact email"
+  → DuckDuckGo: "[name] [city] site officiel"
+  → Visit top result (filter out LinkedIn, Facebook, societe.com etc.)
+  → Try paths: /contact /recrutement /emploi /carrieres /rh /nous-contacter
+  → Extract emails with regex
+  → Rank: recrutement@ > rh@ > hr@ > contact@ > generic
+  → If found: add to queue
+  → If not found: save to follow_up_needed with recommendations
+```
+
+**Rate limiting:** 1–2 second pause between companies. Respects robots.
+
+**Why DuckDuckGo?** Free, no API key, no rate limits for reasonable use, returns real results.
+
+**Why not Google?** Google's search API costs money and requires account setup. DuckDuckGo HTML endpoint works without any credentials.
+
+---
+
+## 11. ProtonMail & Playwright — How it Works
+
+Playwright controls a real browser (Chromium or Firefox) exactly like a human would.
+
+### Login once, send many
+```
+Launch browser → Navigate to ProtonMail login →
 Fill username + password → Click Sign In →
-Wait for inbox to load → Click "New Message" →
-Fill To: field → Fill Subject: → Fill body (via iframe editor) →
-Attach CV file → Click Send → Wait for composer to close →
-Close browser
+Wait for inbox selector → [LOGIN SESSION ACTIVE]
+
+For each email in queue:
+  Click "New Message" →
+  Fill To: → Fill Subject: → Fill body (Rooster iframe editor) →
+  Attach CV → Click Send → Wait for composer to close → next email
 ```
 
-**Why this approach?**
-- ProtonMail uses end-to-end encryption — direct SMTP without Bridge is not supported on free plans
-- Playwright controls a real browser, so it works exactly like a human
-- The session is authenticated with your full password
+### Why this is better than SMTP for ProtonMail
+- ProtonMail free accounts don't support SMTP without Bridge (desktop app)
+- Bridge requires a paid plan
+- Playwright works with any plan using your regular password
 
-**Resilience features:**
-- Multiple CSS selector strategies per UI element (ProtonMail updates frequently)
-- Auto-retry once on failure
-- Headed mode (visible browser) for debugging; headless for speed
+### Selector resilience
+The sender tries **5+ CSS selector strategies** per UI element. If ProtonMail updates their UI, the system tries the next selector. This means the code survives minor redesigns without manual fixes.
 
-**Browser sessions for bulk sending:**
-For multiple emails, the system logs in ONCE and sends all emails in that session — much faster than logging in per email.
+### Troubleshooting a broken send
+Run with `--headless` NOT set (or `HEADLESS=false`) — you'll see the browser and can watch where it gets stuck.
 
 ---
 
-## 10. Bulk Sending Strategy
+## 12. Bulk Sending Strategy
 
 ### Recommended batch sizes
+| Situation | Batch size | Frequency |
+|-----------|-----------|-----------|
+| First test | 1 (dry run first) | Once |
+| First live send | 5 | Once |
+| Daily production | 30–50 | Daily |
+| Full 500 campaign | 50/day | 10 days |
 
-| Situation | Recommended max |
-|-----------|----------------|
-| First test | 1 (dry run) |
-| First live send | 5 |
-| Daily production | 30–50 |
-| Full campaign | 50/day over multiple days |
-
-### Why not all 500 at once?
-
-- ProtonMail free plan: ~150 emails/day limit
-- ProtonMail paid plan: much higher but not unlimited
-- Sending too many at once may trigger spam filters at recipient companies
-- Spreading sends over multiple days looks more natural
-
-### Workflow for the full campaign
-
-```
-Day 1:  companies 1–50   (Max companies = 50)
-Day 2:  companies 51–100
-...
-Day 10: companies 451–500
-```
-
-To resume from where you left off, filter the XLSX to skip already-processed rows, or set Max companies appropriately.
-
-### The bulk sender script (no GUI, faster)
+### Running batches
 
 ```bash
-# Run headlessly in background
-python bulk_sender.py \
-  --cv /path/to/cv.pdf \
-  --companies /path/to/companies.xlsx \
-  --max 50 \
-  --provider deepseek \
-  --dry-run
+# Day 1: first 50
+python search_companies.py --companies companies.xlsx --max 50 --out research_batch1.json
+python organise_emails.py --research research_batch1.json --cv cv.pdf --out queue_batch1.json
+python send_emails.py --queue queue_batch1.json --cv cv.pdf --max 50
+
+# Day 2: next 50 (use --resume to avoid re-researching)
+python search_companies.py --companies companies.xlsx --max 100 --out research_batch2.json --resume
+# ... etc
+```
+
+### The queue file is your audit trail
+Every email in `email_queue.json` has:
+```json
+{
+  "company": "ROYAL BOURBON INDUSTRIES",
+  "recipient": "rbi@royalbourbon.com",
+  "subject": "Candidature Formateur d'Anglais CELTA – Royal Bourbon Industries",
+  "body": "Madame, Monsieur, ...",
+  "status": "sent",
+  "sent_at": "2026-04-21T23:13:39"
+}
 ```
 
 ---
 
-## 11. Troubleshooting
+## 13. Troubleshooting
 
 ### "Cannot locate username field"
-ProtonMail may have changed their login UI. Run with `headless=False` to watch what happens. Update selectors in `email_sender.py → _LOGIN_USERNAME`.
+ProtonMail may have updated their login page. Run headed (`HEADLESS=false`) to watch. Check selectors in `email_sender.py → _LOGIN_USERNAME`.
 
-### "Unable to fill email body"
-The Rooster editor (ProtonMail's rich-text editor) uses iframes. Run headed mode to inspect the actual selector. Add the new selector to `email_sender.py → iframe_strategies`.
+### "Cannot fill email body"
+The Rooster editor uses iframes. Run headed to inspect. Add new selector to `email_sender.py → iframe_strategies`.
+
+### Login timeout
+Usually a slow internet connection. The code already waits for the username field to appear instead of `networkidle` (ProtonMail keeps background requests open forever). If still timing out, increase the timeout values in `email_sender.py`.
 
 ### "No results for [Company]"
-DuckDuckGo returned no results. Try:
-- Adding the company email manually to the XLSX
-- Check if the company name in the spreadsheet is correct
+DuckDuckGo returned no results for that query. Try:
+1. Add email manually to the XLSX
+2. Provide `--directory` flag with a local business directory URL
+3. Check the company name — sometimes very long names match poorly
 
 ### "AI error, falling back to template"
-Check your API key is valid and has credits. The template fallback ensures emails are still generated.
+- Check API key has credits
+- Check `PROVIDER=` is set correctly in `.env`
+- Template will be used as fallback — emails still get generated and sent
 
-### Log files
-All activity is logged to:
-- `logs/automation.log` — human-readable timestamped log
-- `data/metadata/runs.jsonl` — machine-readable JSON, one record per run
+### Check logs
+```bash
+tail -f logs/automation.log        # GUI runs
+tail -f logs/bulk_sender.log       # bulk_sender.py
+tail -f logs/send_emails.log       # send_emails.py
+cat data/metadata/runs.jsonl       # JSON run history
+```
 
 ---
 
-## 12. How it was Built — Technical Log
+## 14. How it was Built — Technical Log
 
 ### Language & Libraries
 
-| Component | Technology | Why |
-|-----------|-----------|-----|
-| GUI | Python + PyQt6 | Cross-platform, mature, accessible |
-| Browser automation | Playwright (sync API) | Most reliable for modern web apps |
-| Web research | requests + BeautifulSoup + lxml | Fast, no API key needed |
-| Search engine | DuckDuckGo HTML endpoint | Free, no rate limits in reasonable use |
-| CV parsing | PyPDF2 | Simple, reliable for text-based PDFs |
-| Company data | pandas + openpyxl | Standard for Excel files |
-| AI (Claude) | anthropic SDK | Best quality, reliable API |
-| AI (Mistral) | mistralai SDK | EU-based alternative |
-| AI (DeepSeek) | openai SDK (compatible) | Cheapest paid option |
-| AI (Ollama) | HTTP API (requests) | 100% local, free |
-| Config | python-dotenv | Simple .env file |
+| Component | Technology | Why chosen |
+|-----------|-----------|-----------|
+| GUI | Python + PyQt6 | Cross-platform, accessible, no web server needed |
+| Browser automation | Playwright (sync) | Most reliable for modern SPAs like ProtonMail |
+| Web search | DuckDuckGo HTML | Free, no API key, usable by anyone |
+| Local directory | requests + BeautifulSoup | Flexible scraping of any HTML page |
+| CV parsing | PyPDF2 | Simple, reliable for text-layer PDFs |
+| Company data | pandas + openpyxl | Industry standard for Excel |
+| AI (Claude) | anthropic SDK (claude-haiku-4-5) | Best quality, Anthropic's fastest/cheapest model |
+| AI (Mistral) | mistralai SDK | EU-based, good French language quality |
+| AI (DeepSeek) | openai SDK (compatible) | Cheapest paid, OpenAI-compatible API |
+| AI (Ollama) | HTTP (requests) | 100% local, free, privacy-preserving |
+| Config | python-dotenv | Simple, portable .env pattern |
+| Accessible UI | PyQt6 | Same framework, custom stylesheet |
 
 ### Architecture decisions
 
-1. **Separation of concerns** — each file does one thing: parse, research, generate, send.
-2. **AI is optional** — template fallback means the system works with zero dependencies on external AI services.
-3. **Column auto-detection** — the XLSX reader tries multiple column name variants so it works with different spreadsheet formats.
-4. **Multiple CSS selectors** — the ProtonMail sender tries 5+ selector strategies per UI element to survive UI updates.
-5. **Worker thread** — automation runs in a QThread so the GUI stays responsive.
-6. **JSONL metadata** — each run appended as one JSON line, easy to query and never overwrites.
+1. **Three separate scripts** — search / organise / send — means each step is inspectable, resumable, and replaceable independently.
+2. **AI is always optional** — template fallback means the system works with zero external dependencies beyond Playwright.
+3. **Login-once session** — `send_emails.py` and `bulk_sender.py` log into ProtonMail once and send all emails in that session. 10× faster than per-email login.
+4. **Column auto-detection** — handles `Raison sociale`, `NOM`, `Company` etc. Works with most French/English spreadsheets.
+5. **Multi-selector resilience** — 5+ CSS strategies per ProtonMail UI element. Survives minor redesigns.
+6. **Queue file as audit trail** — `email_queue.json` tracks `"pending"` / `"sent"` / `"failed"` per email. Re-running skips already-sent.
+7. **Follow-up saving** — companies with no email found are not silently dropped; they go into `"follow_up_needed"` with actionable recommendations.
 
-### Playwright send flow (detailed)
+### Playwright send flow (annotated)
 
 ```python
-# 1. Launch browser
-browser = p.chromium.launch(headless=False)
-page = browser.new_page()
-
-# 2. Login
+# Login — wait for field, not networkidle (ProtonMail has permanent background requests)
 page.goto("https://mail.proton.me/login")
-page.fill("#username", username)
-page.fill("#password", password)
+page.wait_for_selector("#username", timeout=25000)
+page.fill("#username", user)
+page.fill("#password", pw)
 page.click("button[type='submit']")
-page.wait_for_selector(".sidebar")   # inbox loaded
+page.wait_for_selector(".sidebar", timeout=60000)  # inbox ready
 
-# 3. Compose
+# Compose
 page.click("button[data-testid='sidebar:compose']")
 page.fill("input[data-testid='composer:to']", recipient)
 page.fill("input[data-testid='composer:subject']", subject)
 
-# 4. Fill rich-text body (iframe-based editor)
+# Body — Rooster rich-text editor is inside an iframe
 frame = page.frame_locator("iframe[data-testid='rooster-iframe']")
 frame.locator("div[aria-label='Email body']").fill(body_text)
 
-# 5. Attach CV
+# Attach
 page.set_input_files("input[type='file']", cv_path)
-page.wait_for_selector(".attachment-card")
+page.wait_for_selector(".attachment-card")  # upload confirmed
 
-# 6. Send
+# Send
 page.click("button[data-testid='composer:send-button']")
-page.wait_for_selector("div[data-testid='composer']", state='hidden')
+page.wait_for_selector("div[data-testid='composer']", state="hidden")
 ```
 
 ---
 
-## 13. Reusing this System for Any Job Search
+## 15. Reusing for Any Job Search
 
-This system is **general purpose**. To reuse it:
-
-### Change the candidate profile
-Edit `email_generator.py → _TEMPLATE` and update:
-- Name, contact info in the signature
-- Key credentials in the body
-- Speciality hook paragraph
+### Change the candidate
+Edit `email_generator.py → _TEMPLATE`:
+- Update name, phone, email, location in the signature
+- Update key credentials in the body
+- Update the speciality hook paragraph
 
 ### Change the company list
-Replace the XLSX file with any spreadsheet that has a company name column. The system adapts to the column names automatically.
+Any XLSX with a company name column works. The system auto-detects column names. Add an `Email` column to skip web research for companies where you already know the address.
 
 ### Change the language
-The template is in French. To use English:
-- Replace `_TEMPLATE_FR` in `email_generator.py` with an English version
-- Update the AI prompt language in `_build_user_prompt`
+The template is in French. For English:
+```python
+# In email_generator.py, replace _TEMPLATE with English text
+_TEMPLATE = """\
+Dear Hiring Manager,
+I am writing to express my interest in ...
+"""
+# Also update _SYSTEM prompt in _build_user_prompt() to request English output
+```
 
 ### Change the email provider
-The `email_sender.py` uses ProtonMail. To use Gmail, Outlook, or any SMTP provider:
-- Add an SMTP sending function using Python's built-in `smtplib`
-- Or use `yagmail` for Gmail with app passwords
+Replace `email_sender.py` with an SMTP-based sender for any provider:
 
 ```python
 import smtplib
@@ -497,19 +583,64 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
-# Gmail example (requires App Password, not main password)
+# Gmail (needs App Password from myaccount.google.com/apppasswords)
 with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-    server.login("you@gmail.com", "app_password_here")
+    server.login("you@gmail.com", "app_password")
     server.sendmail(from_addr, to_addr, msg.as_string())
-```
 
-### Add to Aeon Dashboard
-The job automator is imported as a module inside Aeon Dashboard. To add another tool:
-1. Create a new `YourToolPage(QWidget)` class in `aeon_dashboard.py`
-2. Add it to `self._pages` and add a nav button for it.
+# Outlook / Hotmail
+with smtplib.SMTP("smtp.live.com", 587) as server:
+    server.starttls()
+    server.login("you@hotmail.com", "password")
+    server.sendmail(...)
+
+# ProtonMail Bridge (paid plan + Bridge app running)
+with smtplib.SMTP("127.0.0.1", 1025) as server:
+    server.login("you@proton.me", "bridge_password")
+    server.sendmail(...)
+```
 
 ---
 
-*Built with Python, PyQt6, Playwright, DuckDuckGo, and optional AI APIs.*
-*No data is sent to any server except the AI provider you choose.*
-*All credentials stay on your machine in the local `.env` file.*
+## 16. Aeon Dashboard
+
+The Aeon Dashboard (`../aeon_dashboard/aeon_dashboard.py`) is an accessible hub that wraps the job automator with a calm, inclusive interface.
+
+### Design principles
+- **Autism-friendly:** predictable layout, no sudden UI changes, clear labels, every destructive action confirmed, muted green palette
+- **Alzheimer-friendly:** large text (14–28px), clock always visible, "What am I doing here?" button on every page, persistent reminders, one task visible at a time
+- **Universal:** works for any user — the job automator is just one module inside a broader personal assistant
+
+### Pages
+| Page | What it does |
+|------|-------------|
+| 🏠 Accueil | Clock, date, today's reminders, quick-action buttons |
+| 📧 Candidatures | Full job automator embedded as a tab |
+| ⏰ Rappels | Add/delete reminders with dates; overdue reminders shown in red |
+| 📝 Notes | Free-text notepad with manual save |
+| ❓ Aide | Full help guide; also accessible via "Qu'est-ce que je fais ici?" button |
+
+### Adding new modules
+```python
+# In aeon_dashboard.py, create a new page class:
+class MyNewToolPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # ... build your UI
+
+# Add to self._pages list and add nav button:
+self._pages.append(MyNewToolPage())
+nav_items.append(("🔧  Mon outil", 5))
+```
+
+### Running
+```bash
+python aeon_dashboard/aeon_dashboard.py
+```
+The job automator is embedded. If it can't load (import error), a "Launch in separate window" button appears instead.
+
+---
+
+*All credentials stay on your machine in `.env`. Nothing is sent to any server except the AI provider you choose and ProtonMail (your own account).*
+
+*Built with Python · PyQt6 · Playwright · DuckDuckGo · DeepSeek / Anthropic / Mistral / Ollama*

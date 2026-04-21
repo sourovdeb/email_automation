@@ -95,26 +95,25 @@ def extract_emails(url):
 
 
 def research_one(company_name, city, directory_url=None):
+    # Use the shared researcher module (improved mailto + domain-guess logic)
+    from researcher import search_company_info
     result = {"company": company_name, "city": city, "website": None,
-              "email": None, "alternatives": [], "status": "not_found"}
-    # 1. Try directory if provided
+              "email": None, "alternatives": [], "guessed_emails": [], "status": "not_found"}
+
+    # 1. Try directory first if provided
     if directory_url:
         email = scrape_directory(directory_url, company_name)
         if email:
             result["email"] = email; result["status"] = "found_directory"; return result
 
-    # 2. DuckDuckGo search
-    urls = ddg_search(f"{company_name} {city} recrutement contact email")
-    if not urls:
-        urls = ddg_search(f"{company_name} {city} site officiel")
-    if urls:
-        result["website"] = urls[0]
-        emails = extract_emails(urls[0])
-        if emails:
-            result["email"] = emails[0]
-            result["alternatives"] = emails[1:4]
-            result["status"] = "found_web"
-    time.sleep(1)
+    # 2. Full research via researcher.py
+    info = search_company_info(company_name, city)
+    result["website"] = info.get("website")
+    result["guessed_emails"] = info.get("guessed_emails", [])
+    if info.get("contact_email"):
+        result["email"] = info["contact_email"]
+        result["alternatives"] = info.get("all_emails", [])[1:4]
+        result["status"] = "found_web"
     return result
 
 
@@ -153,11 +152,13 @@ def main():
             found.append(rec)
             print(f"  ✓ {rec['email']}")
         else:
+            pj_url = f"https://www.pagesjaunes.fr/pros/search?quoiqui={name.replace(' ','+')}&ou={city.replace(' ','+')}"
             rec["alternatives"] = [
-                f"Rechercher manuellement: {name} {city} recrutement",
-                f"Appeler directement ou visiter leur site: {rec.get('website','?')}",
-                f"Consulter: https://www.reunion-directory.com/annuaire-des-professions.html",
-                f"Consulter: https://www.pagesjaunes.fr/pros/search?quoiqui={name.replace(' ','+')}",
+                f"Pages Jaunes: {pj_url}",
+                f"Google: https://www.google.com/search?q={name.replace(' ','+')}+{city.replace(' ','+')}+recrutement+email",
+                f"Local directory: http://www.reunion-directory.com/annuaire-des-professions.html",
+                f"Website to visit manually: {rec.get('website') or 'not found'}",
+                f"Guessed emails (unverified): {', '.join(rec.get('guessed_emails', [])[:3])}",
             ]
             not_found.append(rec)
             print(f"  ✗ no email — saved for follow-up")

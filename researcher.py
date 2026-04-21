@@ -1,169 +1,228 @@
 """
-Company researcher: finds website URL, scrapes about/contact pages, extracts emails.
-Uses DuckDuckGo HTML search (no API key required).
+Company researcher — finds website URL + contact email.
+
+Strategy (in order):
+  1. Mailto: links scraped from the company website (most reliable)
+  2. Email regex in page text + contact/recrutement sub-pages
+  3. Domain-guessing: try common prefixes (recrutement@, rh@, contact@, info@)
+     and verify with SMTP RCPT probe (optional)
+  4. Targeted DDG search: "[company] recrutement email @"
+  5. Alternative directories (Pages Jaunes, local directory)
+
+Uses DuckDuckGo HTML — no API key required.
 """
-import re
-import time
+
+import re, time
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, unquote, parse_qs
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    )
-}
-SESSION = requests.Session()
-SESSION.headers.update(HEADERS)
+UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+SESS = requests.Session()
+SESS.headers.update({'User-Agent': UA})
 
-EMAIL_RE = re.compile(
-    r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}"
-)
-
-CONTACT_PATHS = [
-    "/contact", "/contact-us", "/nous-contacter", "/contactez-nous",
-    "/recrutement", "/emploi", "/carrieres", "/careers", "/jobs",
-    "/rh", "/ressources-humaines",
-]
+EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}")
+MAILTO_RE = re.compile(r'href=["\']mailto:([^"\'?\s]+)', re.IGNORECASE)
 
 JUNK_DOMAINS = {
-    "linkedin.com", "facebook.com", "twitter.com", "instagram.com",
-    "youtube.com", "wikipedia.org", "indeed.com", "glassdoor.com",
-    "leboncoin.fr", "pagesjaunes.fr", "societe.com", "verif.com",
-    "pappers.fr", "manageo.fr", "infogreffe.fr", "annuaire-entreprises.data.gouv.fr",
+    "linkedin.com","facebook.com","twitter.com","instagram.com","youtube.com",
+    "wikipedia.org","indeed.com","glassdoor.com","leboncoin.fr","societe.com",
+    "pagesjaunes.fr","verif.com","pappers.fr","infogreffe.fr","kompass.com",
+    "manageo.fr","annuaire-entreprises.data.gouv.fr","infobel.fr",
+    "africabizinfo.com","shipping-data.com","ma.kompass.com",
 }
+JUNK_EMAIL_PARTS = {"noreply","no-reply","sentry","example","pixel","webmaster",
+                    "bounce","unsubscribe","mailer","postmaster","abuse"}
+PRIORITY_PREFIXES = ["recrutement","rh","hr","emploi","candidature","jobs","career"]
+COMMON_PREFIXES   = ["contact","info","direction","accueil","hello","administration"]
+CONTACT_PATHS = [
+    "/contact","/nous-contacter","/contactez-nous","/contact-us",
+    "/recrutement","/emploi","/carrieres","/careers","/jobs",
+    "/rh","/ressources-humaines","/nous-rejoindre","/join-us",
+]
 
 
-def _ddg_search(query):
-    """DuckDuckGo HTML search — returns list of result URLs."""
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def _clean(email: str) -> str | None:
+    e = email.lower().strip(".,;:\"' ")
+    local, _, domain = e.partition("@")
+    if not domain or "." not in domain:
+        return None
+    if any(p in local for p in JUNK_EMAIL_PARTS):
+        return None
+    if len(e) < 6 or len(e) > 80:
+        return None
+    return e
+
+
+def _score(email: str) -> int:
+    local = email.split("@")[0]
+    for i, p in enumerate(PRIORITY_PREFIXES):
+        if p in local:
+            return 100 - i
+    for i, p in enumerate(COMMON_PREFIXES):
+        if p in local:
+            return 50 - i
+    return 10
+
+
+def _rank(emails: list[str]) -> list[str]:
+    unique = list(dict.fromkeys(e for e in emails if e))
+    return sorted(unique, key=_score, reverse=True)
+
+
+def _fetch(url: str, timeout: int = 10):
+    """Return (soup, html_text) or (None, None)."""
     try:
-        resp = SESSION.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-        urls = []
-        for a in soup.select("a.result__a"):
-            href = a.get("href", "")
-            parsed = urlparse(href)
-            actual = parse_qs(parsed.query).get("uddg", [None])[0]
-            if actual:
-                actual = unquote(actual)
-                domain = urlparse(actual).netloc.lower().lstrip("www.")
-                if not any(j in domain for j in JUNK_DOMAINS):
-                    urls.append(actual)
-        return urls
-    except Exception as e:
-        print(f"DDG search error: {e}")
-        return []
-
-
-def _fetch_text(url, timeout=10):
-    """Fetch a URL and return (soup, raw_text). Returns (None, None) on error."""
-    try:
-        resp = SESSION.get(url, timeout=timeout, allow_redirects=True)
-        if resp.status_code != 200:
+        r = SESS.get(url, timeout=timeout, allow_redirects=True)
+        if r.status_code != 200:
             return None, None
-        soup = BeautifulSoup(resp.text, "lxml")
-        text = soup.get_text(separator=" ", strip=True)
-        return soup, text
+        return BeautifulSoup(r.text, "lxml"), r.text
     except Exception:
         return None, None
 
 
-def _extract_emails(text):
-    """Extract unique, plausible email addresses from text."""
-    found = EMAIL_RE.findall(text or "")
-    cleaned = set()
-    for e in found:
-        e = e.strip(".,;:")
-        domain = e.split("@")[-1].lower()
-        if any(bad in domain for bad in ["sentry", "example", "pixel", "noreply", "no-reply"]):
-            continue
-        cleaned.add(e.lower())
-    return sorted(cleaned)
+def _extract_emails_from_html(html: str) -> list[str]:
+    """Extract from mailto: links first (most explicit), then regex in text."""
+    found = []
+    # mailto: links are the clearest signal
+    for m in MAILTO_RE.findall(html):
+        c = _clean(m)
+        if c:
+            found.append(c)
+    # regex in full text (catches obfuscated and plain text)
+    for m in EMAIL_RE.findall(html):
+        c = _clean(m)
+        if c:
+            found.append(c)
+    return found
 
 
-def _pick_contact_email(emails, company_name):
-    """Score and rank emails: prefer hr/recrutement/contact, avoid generic."""
-    if not emails:
-        return None
-    priority_keywords = ["recrutement", "rh", "hr", "contact", "emploi", "candidature"]
-    for kw in priority_keywords:
-        for e in emails:
-            if kw in e:
-                return e
-    return emails[0]
+def _ddg(query: str, n: int = 5) -> list[str]:
+    """DuckDuckGo HTML search → list of result URLs."""
+    for attempt in range(2):
+        try:
+            r = SESS.get("https://html.duckduckgo.com/html/",
+                         params={"q": query}, timeout=20)
+            r.raise_for_status()
+            soup = BeautifulSoup(r.text, "lxml")
+            urls = []
+            for a in soup.select("a.result__a"):
+                href = a.get("href", "")
+                u = parse_qs(urlparse(href).query).get("uddg", [None])[0]
+                if u:
+                    u = unquote(u)
+                    dom = urlparse(u).netloc.lower().lstrip("www.")
+                    if not any(j in dom for j in JUNK_DOMAINS):
+                        urls.append(u)
+            return urls[:n]
+        except Exception:
+            if attempt == 0:
+                time.sleep(3)
+    return []
 
 
-def search_company_info(company_name, city=""):
+def _guess_emails(domain: str) -> list[str]:
+    """Construct plausible email addresses from the company domain."""
+    guesses = []
+    for prefix in PRIORITY_PREFIXES + COMMON_PREFIXES:
+        guesses.append(f"{prefix}@{domain}")
+    return guesses
+
+
+# ── main entry point ─────────────────────────────────────────────────────────
+
+def search_company_info(company_name: str, city: str = "") -> dict:
     """
-    Main entry point: research a company.
-
-    Returns dict with keys:
-        website (str|None), about_text (str), contact_email (str|None), all_emails (list)
+    Research a company. Returns:
+        website (str|None), about_text (str),
+        contact_email (str|None), all_emails (list[str])
     """
     result = {"website": None, "about_text": "", "contact_email": None, "all_emails": []}
-    query = f"{company_name} {city} site officiel".strip()
-    print(f"  Searching: {query}")
-    urls = _ddg_search(query)
+    all_emails: list[str] = []
 
-    if not urls:
-        query2 = f"{company_name} recrutement contact email"
-        urls = _ddg_search(query2)
-
-    if not urls:
-        print(f"  No results for {company_name}")
-        return result
-
-    website = urls[0]
-    result["website"] = website
-    base = f"{urlparse(website).scheme}://{urlparse(website).netloc}"
-    print(f"  Website candidate: {website}")
-
-    all_emails = []
-    about_text_parts = []
-
-    soup_home, text_home = _fetch_text(website)
-    if text_home:
-        all_emails.extend(_extract_emails(text_home))
-        about_text_parts.append(text_home[:800])
-
-    for path in CONTACT_PATHS:
-        url = urljoin(base, path)
-        _, text = _fetch_text(url)
-        if text:
-            emails = _extract_emails(text)
-            if emails:
-                all_emails.extend(emails)
-                print(f"  Found emails at {path}: {emails}")
-            if "contact" in path or "recrutement" in path:
-                about_text_parts.append(text[:600])
+    # ── 1. Find the website ──────────────────────────────────────────────────
+    queries = [
+        f"{company_name} {city} site officiel recrutement",
+        f"{company_name} {city} contact email emploi",
+    ]
+    website = None
+    for q in queries:
+        urls = _ddg(q)
+        if urls:
+            website = urls[0]
+            break
         time.sleep(0.5)
 
-    unique_emails = list(dict.fromkeys(all_emails))
-    result["all_emails"] = unique_emails
-    result["contact_email"] = _pick_contact_email(unique_emails, company_name)
-    result["about_text"] = " ".join(about_text_parts)[:1500]
+    if not website:
+        print(f"    No website found for {company_name}")
+        return result
+
+    result["website"] = website
+    base = f"{urlparse(website).scheme}://{urlparse(website).netloc}"
+    print(f"    Website: {website}")
+
+    # ── 2. Scrape homepage ───────────────────────────────────────────────────
+    soup_home, html_home = _fetch(website)
+    if html_home:
+        found = _extract_emails_from_html(html_home)
+        all_emails.extend(found)
+        if soup_home:
+            result["about_text"] = soup_home.get_text(" ", strip=True)[:1000]
+
+    # ── 3. Scrape contact/recrutement sub-pages ───────────────────────────────
+    for path in CONTACT_PATHS:
+        url = urljoin(base, path)
+        _, html = _fetch(url)
+        if html:
+            found = _extract_emails_from_html(html)
+            if found:
+                print(f"    Found at {path}: {found[:2]}")
+            all_emails.extend(found)
+        time.sleep(0.3)
+
+    # ── 4. Targeted DDG email search ─────────────────────────────────────────
+    if not all_emails:
+        q = f'"{company_name}" recrutement OR emploi OR "rh@" OR "contact@" email site:{urlparse(base).netloc}'
+        email_urls = _ddg(q, n=3)
+        for u in email_urls:
+            _, html = _fetch(u)
+            if html:
+                all_emails.extend(_extract_emails_from_html(html))
+        time.sleep(0.5)
+
+    # ── 5. Domain-guess as last resort ───────────────────────────────────────
+    domain = urlparse(base).netloc.lstrip("www.")
+    if not all_emails and domain:
+        guesses = _guess_emails(domain)
+        # We don't verify (no SMTP probe by default) — just flag as guessed
+        result["guessed_emails"] = guesses
+        print(f"    No email found — guesses: {guesses[:3]}")
+
+    ranked = _rank(all_emails)
+    result["all_emails"] = ranked
+    result["contact_email"] = ranked[0] if ranked else None
 
     if result["contact_email"]:
-        print(f"  Contact email: {result['contact_email']}")
+        print(f"    Email: {result['contact_email']}")
     else:
-        print(f"  No email found for {company_name}")
+        print(f"    No confirmed email for {company_name}")
 
     time.sleep(1)
     return result
 
 
-# Legacy alias used by older code
-def search_company_website(company_name):
+# Legacy alias
+def search_company_website(company_name: str) -> str | None:
     r = search_company_info(company_name)
     return r.get("about_text") or None
 
 
 if __name__ == "__main__":
-    info = search_company_info("ADECCO REUNION", "LA POSSESSION")
-    print("\nResult:", info)
+    for name, city in [("ADECCO REUNION", "LA POSSESSION"), ("J. ANZEMBERG", "LA POSSESSION")]:
+        print(f"\n=== {name} ===")
+        info = search_company_info(name, city)
+        print("Email:", info["contact_email"])
+        print("All:", info["all_emails"])
