@@ -732,6 +732,64 @@ class MainWindow(QMainWindow):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--test-email":
+        # CLI mode for test email
+        recipient = sys.argv[2] if len(sys.argv) > 2 else "sourovdeb.is@gmail.com"
+        print(f"Sending test email to {recipient}...")
+        
+        # Load env
+        load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=True)
+        
+        # Get paths from env or defaults
+        cv_path = os.getenv("CV_PATH")
+        if not cv_path or not os.path.exists(cv_path):
+            cv_path = "/home/sourov/Documents/employment/rerappelrdvfrancetravailuesaaxeressourceconseilst/Formateurd_Anglais_Certifié_CELTA_Cambridge_Spécialiste_IELTS_TOEIC_Business_English.pdf"
+        
+        proton_user = os.getenv("PROTON_USER")
+        proton_pass = os.getenv("PROTON_PASS")
+        browser = os.getenv("BROWSER", "chromium")
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        provider = os.getenv("PROVIDER", "template")
+        api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("MISTRAL_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+        ollama_model = os.getenv("OLLAMA_MODEL", "mistral")
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        
+        if not proton_user or not proton_pass:
+            print("ERROR: PROTON_USER and PROTON_PASS not set in .env")
+            sys.exit(1)
+        
+        cv_text = extract_cv_text(cv_path) if cv_path else ""
+        company_info = {
+            "company_name": "TEST – Job Automator",
+            "city": "La Réunion",
+            "ca": "",
+            "postal_code": "",
+        }
+        research = {"about_text": "Ceci est un email de test automatisé."}
+        
+        subject, body = generate_email(
+            cv_text or "CV de Sourov Deb, formateur CELTA.",
+            company_info, research,
+            api_key=api_key,
+            provider=provider,
+            ollama_model=ollama_model,
+            ollama_url=ollama_url,
+        )
+        subject = "[TEST] " + subject
+        
+        ok = send_email_with_protonmail(
+            username=proton_user,
+            password=proton_pass,
+            recipient_email=recipient,
+            subject=subject,
+            body=body,
+            attachment_path=cv_path,
+            browser_name=browser,
+            headless=headless,
+        )
+        print("Test email sent successfully!" if ok else "Test email failed!")
+        sys.exit(0 if ok else 1)
+    
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 12))
     win = MainWindow()
