@@ -790,6 +790,108 @@ if __name__ == "__main__":
         print("Test email sent successfully!" if ok else "Test email failed!")
         sys.exit(0 if ok else 1)
     
+    elif len(sys.argv) > 1 and sys.argv[1] == "--bulk-send":
+        # CLI mode for bulk send
+        print("Starting bulk email send...")
+        
+        # Load env
+        load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=True)
+        
+        # Get paths
+        cv_path = os.getenv("CV_PATH")
+        company_path = "/home/sourov/Documents/employment/unemploistablecestpartimisedispositiondeconse/260 Plus grosses entreprises 974 Filtre.xlsx"
+        letter_path = "/home/sourov/Documents/employment/unemploistablecestpartimisedispositiondeconse/LETTRE_MOTIVATION_SOUROV_DEB_2026.pdf"
+        
+        proton_user = os.getenv("PROTON_USER")
+        proton_pass = os.getenv("PROTON_PASS")
+        browser = os.getenv("BROWSER", "chromium")
+        headless = os.getenv("HEADLESS", "false").lower() == "true"
+        dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+        max_companies = int(os.getenv("MAX_COMPANIES", "5"))
+        provider = os.getenv("PROVIDER", "template")
+        api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("MISTRAL_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+        ollama_model = os.getenv("OLLAMA_MODEL", "mistral")
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        
+        if not proton_user or not proton_pass:
+            print("ERROR: PROTON_USER and PROTON_PASS not set in .env")
+            sys.exit(1)
+        
+        # Extract CV and letter
+        cv_text = extract_cv_text(cv_path) if cv_path else ""
+        letter_text = extract_motivation_letter(letter_path) if letter_path and os.path.exists(letter_path) else ""
+        combined_profile = cv_text + ("\n\n" + letter_text if letter_text else "")
+        
+        # Read companies
+        result = read_company_list(company_path)
+        if not result:
+            print("ERROR: Could not read company list")
+            sys.exit(1)
+        df, name_col, email_col = result
+        
+        print(f"Found {len(df)} companies, processing up to {max_companies}")
+        
+        sent_count = 0
+        for idx, row in df.head(max_companies).iterrows():
+            company_name = str(row[name_col]).strip()
+            city = str(row.get('Ville', '')).strip()
+            ca = str(row.get('C.A.', '')).strip()
+            postal_code = str(row.get('CP', '')).strip()
+            
+            print(f"Processing {idx+1}/{min(max_companies, len(df))}: {company_name}")
+            
+            # Research
+            research = search_company_info(company_name, city)
+            contact_email = research.get("contact_email")
+            
+            if not contact_email:
+                print(f"  No email found for {company_name}, skipping")
+                continue
+            
+            # Generate email
+            company_info = {
+                "company_name": company_name,
+                "city": city,
+                "ca": ca,
+                "postal_code": postal_code,
+            }
+            
+            subject, body = generate_email(
+                combined_profile, company_info, research,
+                api_key=api_key,
+                provider=provider,
+                ollama_model=ollama_model,
+                ollama_url=ollama_url,
+            )
+            
+            print(f"  Generated email to {contact_email}")
+            
+            if dry_run:
+                print(f"  [DRY RUN] Would send to {contact_email}")
+                sent_count += 1
+                continue
+            
+            # Send
+            ok = send_email_with_protonmail(
+                username=proton_user,
+                password=proton_pass,
+                recipient_email=contact_email,
+                subject=subject,
+                body=body,
+                attachment_path=cv_path,
+                browser_name=browser,
+                headless=headless,
+            )
+            
+            if ok:
+                print(f"  Email sent successfully to {contact_email}")
+                sent_count += 1
+            else:
+                print(f"  Failed to send to {contact_email}")
+        
+        print(f"Bulk send complete. Processed: {sent_count} emails")
+        sys.exit(0)
+    
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 12))
     win = MainWindow()

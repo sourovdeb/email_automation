@@ -1,6 +1,6 @@
-"""
+""" your 
 Company researcher: finds website URL, scrapes about/contact pages, extracts emails.
-Uses DuckDuckGo HTML search (no API key required).
+Uses DuckDuckGo HTML search (no API key required) with multiple fallback strategies.
 """
 import re
 import time
@@ -24,15 +24,22 @@ EMAIL_RE = re.compile(
 CONTACT_PATHS = [
     "/contact", "/contact-us", "/nous-contacter", "/contactez-nous",
     "/recrutement", "/emploi", "/carrieres", "/careers", "/jobs",
-    "/rh", "/ressources-humaines",
+    "/rh", "/ressources-humaines", "/a-propos", "/about", "/qui-sommes-nous",
 ]
 
 JUNK_DOMAINS = {
     "linkedin.com", "facebook.com", "twitter.com", "instagram.com",
     "youtube.com", "wikipedia.org", "indeed.com", "glassdoor.com",
-    "leboncoin.fr", "pagesjaunes.fr", "societe.com", "verif.com",
-    "pappers.fr", "manageo.fr", "infogreffe.fr", "annuaire-entreprises.data.gouv.fr",
+    "leboncoin.fr", "societe.com", "verif.com", "pappers.fr",
+    "manageo.fr", "infogreffe.fr", "annuaire-entreprises.data.gouv.fr",
 }
+
+# French business directories
+DIRECTORIES = [
+    "https://www.pagesjaunes.fr/pagesblanches/recherche?quoiquoi={query}",
+    "https://www.kompass.com/fr/search/?text={query}",
+    "https://www.societe.com/recherche/{query}.html",
+]
 
 
 def _ddg_search(query):
@@ -98,15 +105,126 @@ def _pick_contact_email(emails, company_name):
                 return e
     return emails[0]
 
+def _search_french_directories(company_name, city):
+    """Search French business directories for company information."""
+    query = company_name.replace(" ", "+")
+    if city:
+        query += "+" + city.replace(" ", "+")
+
+    for directory in DIRECTORIES:
+        url = directory.replace("{query}", query)
+        try:
+            resp = SESSION.get(url, timeout=10)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "lxml")
+                text = soup.get_text(separator=" ", strip=True)
+                emails = _extract_emails(text)
+                if emails:
+                    print(f"  Found in directory: {emails[0]}")
+                    return emails[0], url
+        except Exception as e:
+            print(f"  Directory search error: {e}")
+        time.sleep(1)
+    return None, None
+
+def _generate_guess_emails(company_name):
+    """Generate likely email addresses based on company name."""
+    # Clean company name
+    clean_name = re.sub(r'[^\w\s\-]', '', company_name)
+    clean_name = re.sub(r'\s+', '', clean_name).lower()
+
+    # Common domains for French companies
+    domains = [
+        f"{clean_name}.fr",
+        f"{clean_name}.re",  # Réunion
+        f"{clean_name}.com",
+        f"{clean_name}.net",
+        f"{clean_name}.org"
+    ]
+
+    # Common email patterns
+    patterns = [
+        "contact",
+        "info",
+        "recrutement",
+        "rh",
+        "direction",
+        "accueil"
+    ]
+
+    guesses = []
+    for domain in domains:
+        for pattern in patterns:
+            guesses.append(f"{pattern}@{domain}")
+
+    return guesses[:5]  # Return top 5 guesses
+
+def _search_with_qwant(query):
+    """Qwant search (French search engine) fallback."""
+    try:
+        # Use Qwant search
+        url = f"https://www.qwant.com/?q={query.replace(' ', '+')}"
+        resp = SESSION.get(url, timeout=15)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "lxml")
+            urls = []
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "")
+                if href.startswith("https://www.qwant.com/") or "qwant.com" in href:
+                    continue
+                if href.startswith("http") and not any(j in href for j in JUNK_DOMAINS):
+                    domain = urlparse(href).netloc.lower().lstrip("www.")
+                    if not any(j in domain for j in JUNK_DOMAINS):
+                        urls.append(href)
+            return urls[:3]
+    except Exception as e:
+        print(f"  Qwant search error: {e}")
+    return []
+
+def _search_with_google_fallback(query):
+    """Google search fallback when DuckDuckGo fails."""
+    try:
+        # Use Google search with HTML parsing
+        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        resp = SESSION.get(url, timeout=15)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "lxml")
+            urls = []
+            for a in soup.find_all("a", href=True):
+                href = a.get("href", "")
+                if href.startswith("/url?q="):
+                    parsed = urlparse(href)
+                    actual = parse_qs(parsed.query).get("q", [None])[0]
+                    if actual:
+                        actual = unquote(actual)
+                        domain = urlparse(actual).netloc.lower().lstrip("www.")
+                        if not any(j in domain for j in JUNK_DOMAINS):
+                            urls.append(actual)
+            return urls[:3]
+    except Exception as e:
+        print(f"  Google search error: {e}")
+    return []
+
 
 def search_company_info(company_name, city=""):
     """
-    Main entry point: research a company.
+    Main entry point: research a company with multiple fallback strategies.
 
     Returns dict with keys:
         website (str|None), about_text (str), contact_email (str|None), all_emails (list)
     """
     result = {"website": None, "about_text": "", "contact_email": None, "all_emails": []}
+
+    # Strategy 1: French business directories
+    directory_email, directory_url = _search_french_directories(company_name, city)
+    if directory_email:
+        result["contact_email"] = directory_email
+        result["website"] = directory_url
+        result["all_emails"] = [directory_email]
+        print(f"  Found in French directory: {directory_email}")
+        return result
+
+    # Strategy 2: DuckDuckGo search
     query = f"{company_name} {city} site officiel".strip()
     print(f"  Searching: {query}")
     urls = _ddg_search(query)
@@ -115,8 +233,24 @@ def search_company_info(company_name, city=""):
         query2 = f"{company_name} recrutement contact email"
         urls = _ddg_search(query2)
 
+    # Strategy 3: Qwant (French search engine) fallback
     if not urls:
-        print(f"  No results for {company_name}")
+        print(f"  Trying Qwant search...")
+        urls = _search_with_qwant(query)
+
+    # Strategy 4: Google fallback if Qwant fails
+    if not urls:
+        print(f"  Trying Google search...")
+        urls = _search_with_google_fallback(query)
+
+    if not urls:
+        print(f"  No website found for {company_name}")
+        # Strategy 4: Generate guess emails as last resort
+        guess_emails = _generate_guess_emails(company_name)
+        if guess_emails:
+            result["all_emails"] = guess_emails
+            result["contact_email"] = guess_emails[0]
+            print(f"  Generated guess emails: {guess_emails[0]}")
         return result
 
     website = urls[0]
@@ -127,11 +261,13 @@ def search_company_info(company_name, city=""):
     all_emails = []
     about_text_parts = []
 
+    # Extract emails from homepage
     soup_home, text_home = _fetch_text(website)
     if text_home:
         all_emails.extend(_extract_emails(text_home))
         about_text_parts.append(text_home[:800])
 
+    # Check contact pages
     for path in CONTACT_PATHS:
         url = urljoin(base, path)
         _, text = _fetch_text(url)
@@ -142,7 +278,13 @@ def search_company_info(company_name, city=""):
                 print(f"  Found emails at {path}: {emails}")
             if "contact" in path or "recrutement" in path:
                 about_text_parts.append(text[:600])
-        time.sleep(0.5)
+        time.sleep(0.3)  # Reduced delay for efficiency
+
+    # Add guess emails if no real emails found
+    if not all_emails:
+        guess_emails = _generate_guess_emails(company_name)
+        all_emails.extend(guess_emails)
+        print(f"  Added guess emails: {guess_emails[:2]}")
 
     unique_emails = list(dict.fromkeys(all_emails))
     result["all_emails"] = unique_emails
@@ -150,11 +292,11 @@ def search_company_info(company_name, city=""):
     result["about_text"] = " ".join(about_text_parts)[:1500]
 
     if result["contact_email"]:
-        print(f"  Contact email: {result['contact_email']}")
+        print(f"  ✓ Contact email: {result['contact_email']}")
     else:
-        print(f"  No email found for {company_name}")
+        print(f"  ✗ No email found for {company_name}")
 
-    time.sleep(1)
+    time.sleep(0.8)  # Reduced delay between companies
     return result
 
 
