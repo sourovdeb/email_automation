@@ -1,0 +1,236 @@
+# AI Agent Instructions — Job Search Automation System
+
+> Version 1.0 | Updated: 2026-06-11 | For: Sourov Deb, Formateur Anglais CELTA
+
+---
+
+## What This System Is
+
+This is an **automated job application pipeline** for Sourov Deb, a Cambridge CELTA-certified English trainer based in Saint-Pierre, La Réunion. The system:
+
+1. **Finds jobs** via the France Travail (Pôle Emploi) API and web scraping
+2. **Generates personalised application emails** using AI or a French template
+3. **Sends emails** via ProtonMail (Playwright browser automation) or Gmail (Google Apps Script)
+4. **Tracks** all applications in a log and a Google Sheet
+
+---
+
+## System Architecture
+
+```
+[France Travail API]          [Web Scraping]
+        │                           │
+        ▼                           ▼
+ france_travail_client.py ──► researcher.py
+        │                           │
+        └──────────┬────────────────┘
+                   ▼
+           data_parser.py (reads XLSX / CSV company list)
+                   │
+                   ▼
+         email_generator.py (AI or template)
+                   │
+          ┌────────┴────────┐
+          ▼                 ▼
+   email_sender.py    GmailApp (Google Apps Script)
+   (ProtonMail)       (google_apps_script/JobSearchAutomation.gs)
+          │                 │
+          └────────┬────────┘
+                   ▼
+         Google Sheet + Gmail labels
+```
+
+---
+
+## The Two Pipelines
+
+### Pipeline A — Python + ProtonMail (existing)
+
+| Component | File | Status |
+|-----------|------|--------|
+| GUI launcher | `main_app.py` | ✅ Working |
+| Company research | `researcher.py` | ⚠️ High bounce rate (guessed emails) |
+| Email generator | `email_generator.py` | ✅ Working (5 AI providers + template) |
+| Email sender | `email_sender.py` | ✅ Working (Playwright/ProtonMail) |
+| Bulk CLI | `bulk_sender.py` | ✅ Working |
+| France Travail API | `france_travail_client.py` | ✅ NEW — use this for job discovery |
+
+**When to use:** When you want to apply to companies found in an XLSX list or via France Travail API, attaching your CV.
+
+**Run it:**
+```bash
+python main_app.py
+# or for bulk headless run:
+python bulk_sender.py --cv /path/to/cv.pdf --companies france_travail_jobs_974.csv --max 50
+```
+
+### Pipeline B — Google Apps Script + Gmail (new)
+
+| Component | File | Status |
+|-----------|------|--------|
+| Job search + apply | `google_apps_script/JobSearchAutomation.gs` | ✅ NEW |
+| Config | `google_apps_script/appsscript.json` | ✅ NEW |
+
+**When to use:** When you want a fully automated, cloud-based daily search that runs without your computer being on. No CV attachment (email only).
+
+**Setup:**
+1. Open a Google Sheet → Extensions → Apps Script
+2. Paste the `.gs` file
+3. Run `storeCredentials()` once
+4. Run `setupTrigger()` once — daily search starts at 08:00
+5. Set `AUTO_SEND: false` first to review drafts; set `true` when confident
+
+---
+
+## AI Provider Decision Tree
+
+```
+Do you have an API key?
+  ├─ Anthropic key → use 'anthropic' (Claude Haiku — best quality)
+  ├─ Mistral key   → use 'mistral' (good quality, EU-based)
+  ├─ DeepSeek key  → use 'deepseek' (cheapest)
+  └─ No key:
+       ├─ Ollama running locally? → use 'ollama' (free, private)
+       └─ Nothing → use 'template' (always works, no cost)
+```
+
+Set in `.env`:
+```
+PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+---
+
+## France Travail API — How It Works
+
+**API Name:** Offres d'emploi v2 + Accès à l'emploi des demandeurs d'emploi v1  
+**Auth:** OAuth2 client_credentials  
+**Token URL:** `https://entreprise.pole-emploi.fr/connexion/oauth2/access_token`  
+**Jobs URL:** `https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search`
+
+**Key search parameters:**
+- `motsCles` — keywords (e.g., "formateur anglais")
+- `departement` — department code (974 = La Réunion)
+- `typeContrat` — CDI, CDD, MIS, SAI, LIB
+- `range` — pagination (e.g., "0-49" for 50 results)
+
+**What comes back per job:**
+- `id` — unique job ID
+- `intitule` — job title
+- `entreprise.nom` — company name
+- `lieuTravail.libelle` — city
+- `typeContratLibelle` — contract type
+- `contact.courriel` — direct email (when present)
+- `contact.urlPostulation` — application URL
+- `description` — full job description
+
+**To use from Python:**
+```python
+from france_travail_client import FranceTravailClient
+client = FranceTravailClient()  # reads FT_CLIENT_ID and FT_CLIENT_SECRET from env
+jobs = client.get_jobs_with_email(department="974")
+client.save_to_csv(jobs, "ft_jobs.csv")
+# Then load ft_jobs.csv into the main_app.py GUI
+```
+
+---
+
+## In Case of Difficulty
+
+### Token / Authentication Error
+**Symptom:** `Token error: {"error":"invalid_client"}`  
+**Fix:** Verify client ID and secret in `.env` or Script Properties. Token expires every 25 minutes — the client auto-renews.
+
+### High Email Bounce Rate
+**Symptom:** Many `Delivery Status Notification (Failure)` from mailer-daemon  
+**Cause:** Email addresses generated by web scraping are guessed and often wrong  
+**Fix:** Use `france_travail_client.py` instead — addresses come directly from the official job posting. Alternatively add a verified email column to your XLSX manually.
+
+### ProtonMail Playwright Failure
+**Symptom:** `Cannot locate username field` or `Unable to fill email body`  
+**Fix:** ProtonMail updated their UI. Run with `headless=False` to watch the browser. Update the CSS selectors in `email_sender.py`. Common selector targets:
+- Login: `#username`, `#password`
+- Compose: `button[data-testid='sidebar:compose']`
+- To field: `input[data-testid='composer:to']`
+- Body: `iframe[data-testid='rooster-iframe']`
+
+### Google Apps Script Quota Exceeded
+**Symptom:** Error `Service using too many simultaneous invocations`  
+**Fix:** Reduce `MAX_PER_QUERY`, add `Utilities.sleep(1000)` between batches, or split into multiple daily runs.
+
+### MS365 Group Rejection
+**Symptom:** `Your message to the Microsoft 365 group training@... couldn't be delivered`  
+**Cause:** The address is an internal distribution list that rejects external senders  
+**Fix:** Remove all `training@` addresses at large corporations from your list. Use the company's careers portal URL (`contact.urlPostulation`) instead.
+
+### Domain Not Found Bounce
+**Symptom:** `because the domain X couldn't be found`  
+**Cause:** Email address was guessed from a non-existent or misspelled domain  
+**Fix:** Delete from email list. Use France Travail API or manually verify the company's actual website before adding.
+
+### No Jobs Returned from France Travail API
+**Symptom:** `Found 0 unique job offers`  
+**Cause:** La Réunion (974) may have limited listings at certain times  
+**Fix:** Try other departments: `971` (Guadeloupe), `972` (Martinique), `973` (Guyane), `976` (Mayotte), or remove the department filter to search all of France.
+
+---
+
+## Email List Quality Rules
+
+Before adding any email to your campaign list, verify:
+
+| Check | How |
+|-------|-----|
+| Domain exists | `nslookup domain.com` or browser visit |
+| MX record exists | `nslookup -type=MX domain.com` |
+| Not a distribution group | Avoid `training@bigcorp.com` — use careers portal |
+| Not a no-reply address | Avoid `noreply@`, `donotreply@` |
+| Not a generic public domain | Avoid guessed `rh@michelin.com` — use France Travail API |
+
+**Reliable address types:**
+- Addresses from France Travail API (`contact.courriel`) ✅
+- Addresses from the company's `/recrutement` or `/careers` page ✅
+- Addresses from a real human job posting ✅
+
+**Unreliable address types:**
+- `training@[largecorp].com` — almost always a distribution group ❌
+- `rh@[company]` generated by scraper ❌
+- `careers@[country-specific domain]` at multinationals ❌
+
+---
+
+## Gmail Labels Reference
+
+| Label | ID | Meaning |
+|-------|----|---------|
+| Campaign/Sent-OK | Label_14 | Email sent and not bounced |
+| Campaign/Errors | Label_15 | Bounce/failure received |
+| Org_CareerApplication | Label_31 | Career application (organised) |
+| Org_Letter | Label_28 | Letters/candidatures (organised) |
+| Org_Done | Label_26 | Fully processed |
+| Personal/pole emploi | Label_7399566805105625860 | Pôle Emploi messages |
+
+---
+
+## Recommended Daily Workflow
+
+```
+08:00  Google Apps Script runs automatically
+         → fetches new France Travail jobs
+         → saves to Sheet + Gmail label
+         → creates Gmail drafts for offers with email contact
+
+09:00  You review drafts in Gmail
+         → approve / delete / modify before sending
+         → OR set AUTO_SEND: true for fully automatic
+
+Weekly  Run france_travail_client.py
+         → export to CSV
+         → load into main_app.py for CV-attached sends
+         → process 30-50 companies per day
+```
+
+---
+
+*Candidate profile: Sourov Deb | Cambridge CELTA 2026 | IELTS/TOEIC Specialist | 18 years in Australia | Saint-Pierre, La Réunion 97410 | 06 93 84 61 68*
