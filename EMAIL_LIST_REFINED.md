@@ -1,6 +1,6 @@
 # Email List — Refined & Verified
 
-> Last updated: 2026-06-11 | Based on bounce analysis of 200+ sent applications
+> Last updated: 2026-06-12 | Based on bounce analysis of 200+ sent applications
 
 ---
 
@@ -101,6 +101,8 @@ formacion@telefonica.es
 training@singaporeair.com
 prague@ihlondon.com
 training@emiratesnbd.com
+careers@heathrow.com
+recrutement@cned.fr          ← bounced 2026-06-11 (550 5.1.1 — address not found)
 ```
 
 ### MS365 group — rejects external senders
@@ -137,6 +139,7 @@ These companies only accept applications through their ATS portal. Do not email 
 | KPMG | home.kpmg/careers |
 | Société Générale | careers.societegenerale.com |
 | Michelin | jobs.michelin.com |
+| CNED | cned.fr (use contact form — recrutement@cned.fr address does not exist) |
 
 ---
 
