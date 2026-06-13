@@ -1,6 +1,6 @@
 # Email List — Refined & Verified
 
-> Last updated: 2026-06-11 | Based on bounce analysis of 200+ sent applications
+> Last updated: 2026-06-13 | Based on bounce analysis of 215+ sent applications
 
 ---
 
@@ -30,6 +30,12 @@ These addresses accepted delivery. Maintain and follow up if no response after 2
 | Shell | careers@shell.com | Energy | No bounce |
 | Unilever | training@unilever.com | FMCG | No bounce |
 | Air Mauritius Training (verify) | (resend after fixing address) | Aviation | Old address bounced |
+| EF Education First | careers@ef.com | Education | No bounce at 24h — monitor |
+| ENGIE | training@engie.com | Energy | Auto-reply from Training Admin Team |
+| Berlitz | hr-requests@berlitz.com | Education | Auto-reply received — email works |
+| British Council | teacherrecruitment@britishcouncil.org | Education | Auto-reply received |
+| IFR Réunion | recrutement-sap@ifr-reunion.re | Education/Réunion | ⭐ REAL HUMAN REPLY — top priority |
+| Réunion.fr / Ville | recrutement@reunion.fr | Government/Réunion | Human reply received — under review |
 
 ---
 
@@ -58,9 +64,10 @@ These addresses permanently failed. Remove from all lists immediately.
 formation@afparis.org
 direction@afdakar.org
 tourisme@comorestourisme.com
-careers@starentertainment.com.au
+careers@starentertainment.com.au        ← added 2026-06-13 (company restructured)
 training@thaiairways.co.th
 formation@cochin.aphp.fr
+training@iberia.es                      ← added 2026-06-13 (DNS: domain does not exist)
 ```
 
 ### Address rejected (550/554 permanent failure)
@@ -101,6 +108,11 @@ formacion@telefonica.es
 training@singaporeair.com
 prague@ihlondon.com
 training@emiratesnbd.com
+recrutement@cned.fr             ← added 2026-06-13 (550 5.1.1)
+careers@airbus.com              ← added 2026-06-13 (address not found)
+training@bnpparibas.com         ← added 2026-06-13 (address not found)
+training@santander.es           ← added 2026-06-13 (address not found)
+careers@heathrow.com            ← added 2026-06-13 (address not found)
 ```
 
 ### MS365 group — rejects external senders
@@ -111,6 +123,9 @@ training@microsoft.com
 training@bp.com
 training@otpbank.hu
 training@cathaypacific.com
+recruitment@ihlondon.com        ← added 2026-06-13 (group rejects external)
+formation@reunion.cci.fr        ← added 2026-06-13 (group rejects external)
+info@afpar.com                  ← added 2026-06-13 (group rejects external)
 ```
 
 ---
@@ -137,6 +152,11 @@ These companies only accept applications through their ATS portal. Do not email 
 | KPMG | home.kpmg/careers |
 | Société Générale | careers.societegenerale.com |
 | Michelin | jobs.michelin.com |
+| Airbus | jobs.airbus.com |
+| Banco Santander | gruposantander.com/careers |
+| BNP Paribas | careers.bnpparibas.com |
+| Heathrow Airport | jobs.heathrow.com |
+| IH London | ihworld.com/teach/vacancies |
 
 ---
 
