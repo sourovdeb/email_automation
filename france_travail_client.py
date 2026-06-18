@@ -206,8 +206,8 @@ class FranceTravailClient:
 # ── CLI demo ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    CLIENT_ID     = os.getenv("FT_CLIENT_ID",     "PAR_automationderecherech_72d2b44113ac287b9c4cb540958e31ff2b95695fabec41ce3580d057a753c346")
-    CLIENT_SECRET = os.getenv("FT_CLIENT_SECRET", "159c4ab554143db7f6d45638628c8a47bcbf9f52ac2efb9beedd3815c4b472ca")
+    CLIENT_ID     = os.getenv("FT_CLIENT_ID",     "")
+    CLIENT_SECRET = os.getenv("FT_CLIENT_SECRET", "")
 
     client = FranceTravailClient(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
 
