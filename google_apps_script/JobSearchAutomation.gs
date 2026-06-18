@@ -25,10 +25,8 @@
 
 const CONFIG = {
   // France Travail API credentials
-  FT_CLIENT_ID:     PropertiesService.getScriptProperties().getProperty('FT_CLIENT_ID')
-                    || 'PAR_automationderecherech_72d2b44113ac287b9c4cb540958e31ff2b95695fabec41ce3580d057a753c346',
-  FT_CLIENT_SECRET: PropertiesService.getScriptProperties().getProperty('FT_CLIENT_SECRET')
-                    || '159c4ab554143db7f6d45638628c8a47bcbf9f52ac2efb9beedd3815c4b472ca',
+  FT_CLIENT_ID:     PropertiesService.getScriptProperties().getProperty('FT_CLIENT_ID') || '',
+  FT_CLIENT_SECRET: PropertiesService.getScriptProperties().getProperty('FT_CLIENT_SECRET') || '',
 
   // Search parameters
   DEPARTMENT:    '974',       // 974 = La Réunion
